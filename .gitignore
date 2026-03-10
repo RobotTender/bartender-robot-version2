@@ -1,0 +1,63 @@
+# ==============================
+# Python
+# ==============================
+__pycache__/
+*.py[cod]
+*$py.class
+
+# ==============================
+# Virtual Environment
+# ==============================
+.venv/
+venv/
+env/
+
+
+
+# ==============================
+# Django
+# ==============================
+*.log
+db.sqlite3
+db.sqlite3-journal
+media/
+staticfiles/
+
+# ==============================
+# Environment variables
+# ==============================
+.env
+.env.*
+*.env
+
+# ==============================
+# VSCode
+# ==============================
+.vscode/
+
+# ==============================
+# Pytest / coverage
+# ==============================
+.coverage
+htmlcov/
+.pytest_cache/
+
+# ==============================
+# OS files
+# ==============================
+.DS_Store
+Thumbs.db
+
+# ==============================
+# ROS2 / Robot workspace artifacts
+# ==============================
+.colcon/
+build/
+install/
+log/
+robot/build/
+robot/install/
+robot/log/
+robot/src/**/build/
+robot/src/**/install/
+robot/src/**/log/

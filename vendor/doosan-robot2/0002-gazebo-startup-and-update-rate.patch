@@ -1,0 +1,93 @@
+diff --git a/dsr_bringup2/launch/dsr_bringup2_gazebo.launch.py b/dsr_bringup2/launch/dsr_bringup2_gazebo.launch.py
+index 0ae1c05..2ade46f 100644
+--- a/dsr_bringup2/launch/dsr_bringup2_gazebo.launch.py
++++ b/dsr_bringup2/launch/dsr_bringup2_gazebo.launch.py
+@@ -9,7 +9,7 @@
+ import os
+ 
+ from launch import LaunchDescription
+-from launch.actions import RegisterEventHandler,DeclareLaunchArgument
++from launch.actions import RegisterEventHandler, DeclareLaunchArgument, TimerAction
+ from launch.event_handlers import OnProcessExit
+ from launch.substitutions import Command, FindExecutable, PathJoinSubstitution, LaunchConfiguration, PythonExpression
+ from launch.conditions import IfCondition, UnlessCondition
+@@ -192,7 +192,6 @@ def generate_launch_description():
+         namespace=LaunchConfiguration('name'),
+         executable="spawner",
+         arguments=["joint_state_broadcaster", "-c", "controller_manager"],
+-        parameters=[PathJoinSubstitution([FindPackageShare("dsr_controller2"), "config", "joint_state_broadcaster.yaml"])]
+     )
+ 
+ 
+@@ -219,25 +218,40 @@ def generate_launch_description():
+                           'use_sim_time' : LaunchConfiguration('use_sim_time'),
+                           }.items(),
+     )
++
++    delayed_included_launch = TimerAction(
++        period=2.0,
++        actions=[included_launch],
++    )
+     
+ 
+     included_launch_after_robot_controller_spawner = RegisterEventHandler(
+         event_handler=OnProcessExit(
+             target_action=robot_controller_spawner,
+-            on_exit=[included_launch],
++            on_exit=[delayed_included_launch],
+         )
+     )
++
++    # virtual 모드에서 run_emulator가 기존 컨테이너를 재시작할 수 있어
++    # ros2_control을 너무 일찍 띄우면 초기화 실패가 발생할 수 있다.
++    # 제어 스택 시작을 약간 지연시켜 에뮬레이터 안정화 이후 연결하도록 한다.
++    delayed_control_stack = TimerAction(
++        period=6.0,
++        actions=[
++            control_node,
++            robot_controller_spawner,
++            joint_state_broadcaster_spawner,
++            gazebo_connection_node,
++        ],
++    )
+     
+     nodes = [
+         set_use_sim_time,
+         run_emulator_node,
+-        gazebo_connection_node,
+         original_tf_nodes,
+         remapped_tf_nodes,
+-        robot_controller_spawner,
+-        joint_state_broadcaster_spawner,
++        delayed_control_stack,
+         included_launch_after_robot_controller_spawner,
+-        control_node,
+     ]
+ 
+     return LaunchDescription(ARGUMENTS + nodes)
+diff --git a/dsr_description2/xacro/e0509.urdf.xacro b/dsr_description2/xacro/e0509.urdf.xacro
+index 3d08b5a..7613b2d 100755
+--- a/dsr_description2/xacro/e0509.urdf.xacro
++++ b/dsr_description2/xacro/e0509.urdf.xacro
+@@ -12,7 +12,8 @@
+   <xacro:arg name="rt_host"      default=""/>
+   <xacro:arg name="mode"         default=""/>
+   <xacro:arg name="model"        default=""/>
+-  <xacro:arg name="update_rate"  default=""/>
++  <!-- 핵심: update_rate 기본값을 숫자로 주고, Gazebo 매크로에 전달 -->
++  <xacro:arg name="update_rate"  default="100"/>
+ 
+   <!-- Local properties -->
+   <xacro:property name="cr"          value="$(arg color)"/>
+@@ -47,7 +48,10 @@
+   <!-- Gazebo -->
+   <xacro:if value="${gz}">
+     <xacro:include filename="$(find dsr_description2)/ros2_control/e0509.gz_ros2_control.xacro"/>
+-    <xacro:e0509_gz_ros2_control namespace="$(arg namespace)"/>
++    <xacro:e0509_gz_ros2_control
++      namespace="$(arg namespace)"
++      update_rate="${update_rate}"
++    />
+   </xacro:if>
+ 
+   <!-- Mujoco -->

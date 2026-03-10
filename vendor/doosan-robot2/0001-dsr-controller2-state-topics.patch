@@ -1,0 +1,235 @@
+diff --git a/dsr_controller2/config/dsr_controller2.yaml b/dsr_controller2/config/dsr_controller2.yaml
+index c1372c2..ef280ae 100755
+--- a/dsr_controller2/config/dsr_controller2.yaml
++++ b/dsr_controller2/config/dsr_controller2.yaml
+@@ -31,11 +31,12 @@
+         - joint_5
+         - joint_6
+ 
+-      # rt_data topic argument
+-      use_rt_topic_pub: false
+-      rt_timer_ms: 10                      # ms
+-      rt_topic_keys:                       # Field names available for RT publishing (see extract_field() in dsr_controller2.cpp)
+-        - actual_joint_position
++      # rt_data topic argument
++      use_rt_topic_pub: true
++      rt_timer_ms: 10                      # ms
++      rt_topic_keys:                       # Field names available for RT publishing (see extract_field() in dsr_controller2.cpp)
++        - actual_joint_position
++        - actual_tcp_position
+ 
+   dsr_position_controller:
+     ros__parameters:
+diff --git a/dsr_controller2/include/dsr_controller2/dsr_controller2.hpp b/dsr_controller2/include/dsr_controller2/dsr_controller2.hpp
+index 4d7a57a..9a1f3f2 100644
+--- a/dsr_controller2/include/dsr_controller2/dsr_controller2.hpp
++++ b/dsr_controller2/include/dsr_controller2/dsr_controller2.hpp
+@@ -573,6 +573,8 @@ public:
+   
+   rclcpp::Publisher<dsr_msgs2::msg::RobotDisconnection>::SharedPtr disconnect_pub_;
+   rclcpp::Publisher<dsr_msgs2::msg::RobotError>::SharedPtr error_log_pub_;
++  rclcpp::Publisher<dsr_msgs2::msg::RobotState>::SharedPtr robot_state_pub_;
++  rclcpp::Publisher<dsr_msgs2::msg::RobotStateRt>::SharedPtr robot_state_rt_pub_;
+ protected:
+   std::vector<std::string> joint_names_;
+   std::vector<std::string> command_interface_types_;
+diff --git a/dsr_controller2/src/dsr_controller2.cpp b/dsr_controller2/src/dsr_controller2.cpp
+index bbf5bdf..0e3830c 100644
+--- a/dsr_controller2/src/dsr_controller2.cpp
++++ b/dsr_controller2/src/dsr_controller2.cpp
+@@ -67,6 +67,32 @@ const char* GetRobotStateString(int nState)
+     return "UNKNOWN";
+ }
+ 
++// [TEAM2 SYS 2026-02-19 12:36:41 JST] Added enum-style state name mapping for RobotState.msg.robot_state_str.
++// The original helper above returns human-readable strings with numeric prefixes.
++const char* GetRobotStateName(int nState)
++{
++    switch(nState)
++    {
++    case STATE_INITIALIZING:    return "STATE_INITIALIZING";
++    case STATE_STANDBY:         return "STATE_STANDBY";
++    case STATE_MOVING:          return "STATE_MOVING";
++    case STATE_SAFE_OFF:        return "STATE_SAFE_OFF";
++    case STATE_TEACHING:        return "STATE_TEACHING";
++    case STATE_SAFE_STOP:       return "STATE_SAFE_STOP";
++    case STATE_EMERGENCY_STOP:  return "STATE_EMERGENCY_STOP";
++    case STATE_HOMMING:         return "STATE_HOMMING";
++    case STATE_RECOVERY:        return "STATE_RECOVERY";
++    case STATE_SAFE_STOP2:      return "STATE_SAFE_STOP2";
++    case STATE_SAFE_OFF2:       return "STATE_SAFE_OFF2";
++    case STATE_RESERVED1:       return "STATE_RESERVED1";
++    case STATE_RESERVED2:       return "STATE_RESERVED2";
++    case STATE_RESERVED3:       return "STATE_RESERVED3";
++    case STATE_RESERVED4:       return "STATE_RESERVED4";
++    case STATE_NOT_READY:       return "STATE_NOT_READY";
++    default:                    return "STATE_UNKNOWN";
++    }
++}
++
+ namespace dsr_controller2
+ {
+ RobotController::RobotController() : controller_interface::ControllerInterface() {}
+@@ -2345,6 +2371,10 @@ auto set_output_register_float_cb = [this](const std::shared_ptr<dsr_msgs2::srv:
+ 
+   error_log_pub_ = get_node()->create_publisher<dsr_msgs2::msg::RobotError>("error", 100);
+   disconnect_pub_ = get_node()->create_publisher<dsr_msgs2::msg::RobotDisconnection>("robot_disconnection", 100);
++  // [TEAM2 SYS 2026-02-19 12:36:41 JST] Added RobotState publisher on "RobotState" topic.
++  robot_state_pub_ = get_node()->create_publisher<dsr_msgs2::msg::RobotState>("RobotState", 100);
++  // [TEAM2 SYS 2026-02-19 12:36:41 JST] Added RobotStateRt publisher on "RobotStateRt" topic.
++  robot_state_rt_pub_ = get_node()->create_publisher<dsr_msgs2::msg::RobotStateRt>("RobotStateRt", 100);
+ 
+   cb_group_ = get_node()->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+   // Subscription declarations
+@@ -2784,6 +2814,119 @@ controller_interface::CallbackReturn RobotController::on_shutdown(const rclcpp_l
+ 
+ 
+ namespace DRFL_CALLBACKS{
++// [TEAM2 SYS 2026-02-19 12:36:41 JST] Convert cached DRFL monitoring data (g_stDrState) to RobotState message fields.
++void FillRobotStateMsgFromCache(dsr_msgs2::msg::RobotState &msg)
++{
++    msg.robot_state = g_stDrState.nRobotState;
++    msg.robot_state_str = GetRobotStateName(g_stDrState.nRobotState);
++    msg.actual_mode = static_cast<int8_t>(g_stDrState.nActualMode);
++    msg.actual_space = static_cast<int8_t>(g_stDrState.nActualSpace);
++
++    for (size_t i = 0; i < NUM_JOINT; ++i) {
++        msg.current_posj[i] = static_cast<double>(g_stDrState.fCurrentPosj[i]);
++        msg.current_velj[i] = static_cast<double>(g_stDrState.fCurrentVelj[i]);
++        msg.joint_abs[i] = static_cast<double>(g_stDrState.fJointAbs[i]);
++        msg.joint_err[i] = static_cast<double>(g_stDrState.fJointErr[i]);
++        msg.target_posj[i] = static_cast<double>(g_stDrState.fTargetPosj[i]);
++        msg.target_velj[i] = static_cast<double>(g_stDrState.fTargetVelj[i]);
++        msg.current_posx[i] = static_cast<double>(g_stDrState.fCurrentPosx[i]);
++        msg.current_tool_posx[i] = static_cast<double>(g_stDrState.fCurrentToolPosx[i]);
++        msg.current_velx[i] = static_cast<double>(g_stDrState.fCurrentVelx[i]);
++        msg.task_err[i] = static_cast<double>(g_stDrState.fTaskErr[i]);
++        msg.target_posx[i] = static_cast<double>(g_stDrState.fTargetPosx[i]);
++        msg.target_velx[i] = static_cast<double>(g_stDrState.fTargetVelx[i]);
++        msg.dynamic_tor[i] = static_cast<double>(g_stDrState.fDynamicTor[i]);
++        msg.actual_jts[i] = static_cast<double>(g_stDrState.fActualJTS[i]);
++        msg.actual_ejt[i] = static_cast<double>(g_stDrState.fActualEJT[i]);
++        msg.actual_ett[i] = static_cast<double>(g_stDrState.fActualETT[i]);
++        msg.actual_bk[i] = static_cast<int8_t>(g_stDrState.nActualBK[i]);
++        msg.actual_mc[i] = static_cast<double>(g_stDrState.fActualMC[i]);
++        msg.actual_mt[i] = static_cast<double>(g_stDrState.fActualMT[i]);
++        msg.f_actual_w2b[i] = static_cast<double>(g_stDrState.fActualW2B[i]);
++        msg.f_current_vel_world[i] = static_cast<double>(g_stDrState.fCurrentVelW[i]);
++        msg.f_world_ext_target_torque[i] = static_cast<double>(g_stDrState.fWorldETT[i]);
++        msg.f_target_pos_world[i] = static_cast<double>(g_stDrState.fTargetPosW[i]);
++        msg.f_target_vel_world[i] = static_cast<double>(g_stDrState.fTargetVelW[i]);
++        msg.f_current_vel_user[i] = static_cast<double>(g_stDrState.fCurrentVelU[i]);
++        msg.f_user_ext_task_torque[i] = static_cast<double>(g_stDrState.fUserETT[i]);
++        msg.f_target_pos_user[i] = static_cast<double>(g_stDrState.fTargetPosU[i]);
++        msg.f_target_vel_user[i] = static_cast<double>(g_stDrState.fTargetVelU[i]);
++    }
++
++    for (size_t i = 0; i < NUM_BUTTON; ++i) {
++        msg.actual_bt[i] = static_cast<int8_t>(g_stDrState.nActualBT[i]);
++    }
++    for (size_t i = 0; i < 16; ++i) {
++        msg.ctrlbox_digital_input[i] = static_cast<int8_t>(g_stDrState.bCtrlBoxDigitalInput[i]);
++        msg.ctrlbox_digital_output[i] = static_cast<int8_t>(g_stDrState.bCtrlBoxDigitalOutput[i]);
++    }
++    for (size_t i = 0; i < NUM_FLANGE_IO; ++i) {
++        msg.flange_digital_input[i] = static_cast<int8_t>(g_stDrState.bFlangeDigitalInput[i]);
++        msg.flange_digital_output[i] = static_cast<int8_t>(g_stDrState.bFlangeDigitalOutput[i]);
++    }
++
++    msg.solution_space = static_cast<int8_t>(g_stDrState.nSolutionSpace);
++    msg.sync_time = g_stDrState.dSyncTime;
++    msg.access_control = g_stDrState.nAccessControl;
++    msg.homming_completed = g_stDrState.bHommingCompleted;
++    msg.tp_initialized = g_stDrState.bTpInitialized;
++    msg.mastering_need = static_cast<int8_t>(g_stDrState.bMasteringNeed);
++    msg.drl_stopped = g_stDrState.bDrlStopped;
++    msg.disconnected = g_stDrState.bDisconnected;
++    msg.i_actual_user_coord_num = static_cast<int8_t>(g_stDrState.iActualUCN);
++    msg.i_coord_ref = static_cast<int8_t>(g_stDrState.iParent);
++
++    for (size_t i = 0; i < 6; ++i) {
++        msg.f_actual_analog_input[i] = static_cast<double>(g_stDrState.fActualAI[i]);
++    }
++    for (size_t i = 0; i < 2; ++i) {
++        msg.i_actual_analog_input_type[i] = static_cast<int8_t>(g_stDrState.iActualAT[i]);
++        msg.f_target_analog_output[i] = static_cast<double>(g_stDrState.fTargetAO[i]);
++        msg.i_target_analog_output_type[i] = static_cast<int8_t>(g_stDrState.iTargetAT[i]);
++        msg.b_actual_encorder_strove_signal[i] = g_stDrState.bActualES[i];
++        msg.i_actual_encorder_raw_data[i] = static_cast<int8_t>(g_stDrState.iActualED[i]);
++        msg.b_actual_encorder_reset_signal[i] = g_stDrState.bActualER[i];
++    }
++    for (size_t i = 0; i < 3; ++i) {
++        msg.b_actual_switch_input[i] = g_stDrState.bActualSW[i];
++    }
++    for (size_t i = 0; i < 2; ++i) {
++        msg.b_actual_safety_input[i] = g_stDrState.bActualSI[i];
++    }
++}
++
++// [TEAM2 SYS 2026-02-19 12:36:41 JST] Centralized publish helper used by monitoring callbacks after cache updates.
++void PublishRobotStateFromCache()
++{
++    if (instance == nullptr || instance->robot_state_pub_ == nullptr) return;
++    if (0 == instance->robot_state_pub_.use_count()) return;
++
++    dsr_msgs2::msg::RobotState msg;
++    FillRobotStateMsgFromCache(msg);
++    instance->robot_state_pub_->publish(msg);
++}
++
++void PublishRobotStateRtFromRt()
++{
++    if (instance == nullptr || instance->robot_state_rt_pub_ == nullptr) return;
++    if (0 == instance->robot_state_rt_pub_.use_count()) return;
++
++    LPRT_OUTPUT_DATA_LIST temp = Drfl->read_data_rt();
++    if (!temp) return;
++
++    dsr_msgs2::msg::RobotStateRt msg;
++    msg.time_stamp = temp->time_stamp;
++    msg.robot_mode = temp->robot_mode;
++    msg.robot_state = temp->robot_state;
++    msg.control_mode = temp->control_mode;
++    for (size_t i = 0; i < 6; ++i) {
++        msg.actual_joint_position[i] = temp->actual_joint_position[i];
++        msg.actual_tcp_position[i] = temp->actual_tcp_position[i];
++        msg.actual_flange_position[i] = temp->actual_flange_position[i];
++    }
++    instance->robot_state_rt_pub_->publish(msg);
++}
++
+ 	//----- register the call-back functions ----------------------------------------
+ void OnTpInitializingCompletedCB()
+ {
+@@ -2940,6 +3083,10 @@ void OnMonitoringDataCB(const LPMONITORING_DATA pData)
+             g_stDrState.bFlangeDigitalOutput[i] = pData->_tMisc._iActualDO[i];      // Digital output data
+         }
+     }
++
++    // [TEAM2 SYS 2026-02-19 12:36:41 JST] Publish latest cached state on each monitoring frame.
++    PublishRobotStateFromCache();
++    PublishRobotStateRtFromRt();
+ }
+ 
+ // M2.5 or higher    
+@@ -3033,6 +3180,10 @@ void OnMonitoringDataExCB(const LPMONITORING_DATA_EX pData)
+     g_stDrState.iActualUCN = pData->_tCtrl._tUser._iActualUCN;
+     g_stDrState.iParent    = pData->_tCtrl._tUser._iParent;
+     //-------------------------------------------------------------------------
++
++    // [TEAM2 SYS 2026-02-19 12:36:41 JST] Publish latest cached state on each extended monitoring frame.
++    PublishRobotStateFromCache();
++    PublishRobotStateRtFromRt();
+ }
+ 
+ void OnMonitoringModbusCB (const LPMONITORING_MODBUS pModbus)
+@@ -3092,6 +3243,9 @@ void OnMonitoringStateCB(const ROBOT_STATE eState)
+     // cout << "[callback OnMonitoringStateCB] current state: " << GetRobotStateString((int)eState) << endl;
+     g_stDrState.nRobotState = (int)eState;
+     strncpy(g_stDrState.strRobotState, GetRobotStateString((int)eState), MAX_SYMBOL_SIZE); 
++
++    // [TEAM2 SYS 2026-02-19 12:36:41 JST] Publish state immediately when robot state transition callback arrives.
++    PublishRobotStateFromCache();
+ }
+ 
+ void OnMonitoringAccessControlCB(const MONITORING_ACCESS_CONTROL eAccCtrl)

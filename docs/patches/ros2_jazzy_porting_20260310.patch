@@ -1,0 +1,928 @@
+diff --git a/config/parameter.csv b/config/parameter.csv
+index ef5954c..5d19167 100644
+--- a/config/parameter.csv
++++ b/config/parameter.csv
+@@ -1,10 +1,10 @@
+ name,v1,v2,v3,v4,v5,v6
+-active_calibration_path,config/calibration/calib_matrix_260309_141508.txt
+-active_calibration_path_1,config/calibration/calib_matrix_260309_141508.txt
++active_calibration_path,config/calibration/calib_matrix_260309_141508.txt
++active_calibration_path_1,config/calibration/calib_matrix_260309_141508.txt
+ active_calibration_path_2,config/calibration/calib_matrix_260225_131257.txt
+-home_posj,90.000000,-72.870000,88.990000,-181.570000,-70.250000,91.390000
++home_posj,95.590000,-56.940000,107.090000,-3.340000,35.860000,-85.580000
+ top_status_robot_enabled,1
+-top_status_vision2_enabled,0
++top_status_vision2_enabled,1
+ top_status_vision_enabled,1
+ vision1_calib_seq_p10_enabled,1
+ vision1_calib_seq_p10_j,288.690000,312.020000,821.700000,40.630000,106.920000,-97.720000
+diff --git a/launch/system_launch.py b/launch/system_launch.py
+index 6921f47..f6eca72 100755
+--- a/launch/system_launch.py
++++ b/launch/system_launch.py
+@@ -1,6 +1,7 @@
+ #!/usr/bin/env python3
+ import os
+ import signal
++import socket
+ import subprocess
+ import sys
+ import time
+@@ -33,6 +34,8 @@ def _parse_cli_overrides(argv):
+             continue
+         if key == 'run_ui':
+             key = 'run_frontend'
++        if key == 'rt_host':
++            key = 'robot_rt_host'
+         overrides[key] = value
+     run_robot = str(overrides.get('run_robot', 'true')).strip().lower()
+     if run_robot != 'true' and 'robot_mode' not in overrides:
+@@ -40,6 +43,14 @@ def _parse_cli_overrides(argv):
+     mode = str(overrides.get('robot_mode', '')).strip().lower()
+     if mode == 'virtual' and 'robot_host' not in overrides:
+         overrides['robot_host'] = '127.0.0.1'
++    if mode == 'real' and 'robot_gz' not in overrides:
++        overrides['robot_gz'] = 'false'
++    if mode == 'virtual' and 'robot_gz' not in overrides:
++        overrides['robot_gz'] = 'true'
++    if mode == 'real' and 'robot_rt_host' not in overrides:
++        detected_rt_host = _detect_local_ip_for_target(overrides.get('robot_host', '110.120.1.68'))
++        if detected_rt_host:
++            overrides['robot_rt_host'] = detected_rt_host
+     return overrides
+ 
+ 
+@@ -52,6 +63,21 @@ def _is_true_text(value, default=False):
+     return bool(default)
+ 
+ 
++def _detect_local_ip_for_target(target_host):
++    host = str(target_host or '').strip()
++    if not host:
++        return None
++    try:
++        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
++        try:
++            sock.connect((host, 1))
++            return str(sock.getsockname()[0] or '').strip() or None
++        finally:
++            sock.close()
++    except Exception:
++        return None
++
++
+ def _collect_processes_by_pattern(pattern):
+     try:
+         output = subprocess.check_output(['pgrep', '-af', pattern], text=True)
+@@ -75,6 +101,28 @@ def _collect_processes_by_pattern(pattern):
+     return found
+ 
+ 
++GAZEBO_PROCESS_PATTERNS = (
++    r'ruby .*/gz sim',
++    r'ruby .*/gz gui',
++    r'(^| )gz sim( |$)',
++    r'(^| )gz gui( |$)',
++    r'(^| )ign gazebo( |$)',
++    r'ign-gazebo',
++    r'gz-sim',
++    r'gz-gui',
++    r'gzserver',
++    r'gzclient',
++    r'gazebo( |$)',
++)
++
++
++def _collect_gazebo_processes():
++    found = {}
++    for pattern in GAZEBO_PROCESS_PATTERNS:
++        found.update(_collect_processes_by_pattern(pattern))
++    return found
++
++
+ def _wait_for_exit(pids, timeout_sec):
+     remaining = set(int(pid) for pid in pids)
+     deadline = time.monotonic() + max(0.0, float(timeout_sec))
+@@ -89,19 +137,13 @@ def _wait_for_exit(pids, timeout_sec):
+     return remaining
+ 
+ 
+-def _cleanup_lingering_gazebo_processes(enabled=True):
++def _cleanup_lingering_gazebo_processes(enabled=True, baseline_pids=None):
+     if not enabled:
+         return
+-    patterns = (
+-        r'ruby .*/gz sim',
+-        r'ruby .*/ign gazebo',
+-        r'gzserver',
+-        r'gzclient',
+-        r'gazebo( |$)',
+-    )
+-    found = {}
+-    for pattern in patterns:
+-        found.update(_collect_processes_by_pattern(pattern))
++    found = _collect_gazebo_processes()
++    if baseline_pids:
++        keep = {int(pid) for pid in baseline_pids}
++        found = {pid: cmd for pid, cmd in found.items() if int(pid) not in keep}
+     if not found:
+         return
+     remaining = set(found.keys())
+@@ -134,8 +176,9 @@ def generate_launch_description(overrides=None):
+         DeclareLaunchArgument('run_robot', default_value='true'),
+         DeclareLaunchArgument('robot_mode', default_value='real'),
+         DeclareLaunchArgument('robot_host', default_value='110.120.1.68'),
++        DeclareLaunchArgument('robot_rt_host', default_value='192.168.137.50'),
+         DeclareLaunchArgument('robot_model', default_value='e0509'),
+-        DeclareLaunchArgument('robot_gz', default_value='true'),
++        DeclareLaunchArgument('robot_gz', default_value='false'),
+         DeclareLaunchArgument('run_sensors', default_value='true'),
+         DeclareLaunchArgument('run_frontend', default_value='true'),
+     ]
+@@ -147,6 +190,7 @@ def generate_launch_description(overrides=None):
+         launch_arguments={
+             'mode': LaunchConfiguration('robot_mode'),
+             'host': LaunchConfiguration('robot_host'),
++            'rt_host': LaunchConfiguration('robot_rt_host'),
+             'model': LaunchConfiguration('robot_model'),
+             'gz': LaunchConfiguration('robot_gz'),
+         }.items(),
+@@ -193,10 +237,16 @@ def main(argv=None):
+         _is_true_text((overrides or {}).get('run_robot', 'true'), default=True)
+         and _is_true_text((overrides or {}).get('robot_gz', 'true'), default=True)
+     )
++    baseline_gazebo_pids = set()
++    if cleanup_gazebo:
++        baseline_gazebo_pids = set(_collect_gazebo_processes().keys())
+     try:
+         return ls.run()
+     finally:
+-        _cleanup_lingering_gazebo_processes(enabled=cleanup_gazebo)
++        _cleanup_lingering_gazebo_processes(
++            enabled=cleanup_gazebo,
++            baseline_pids=baseline_gazebo_pids,
++        )
+ 
+ 
+ if __name__ == '__main__':
+diff --git a/run_bartender.py b/run_bartender.py
+index 10266eb..80b9d79 100644
+--- a/run_bartender.py
++++ b/run_bartender.py
+@@ -1,15 +1,81 @@
+ #!/usr/bin/env python3
+ import importlib.util
++import os
++import shlex
++import subprocess
+ import sys
+ from pathlib import Path
+ 
+-SYSTEM_LAUNCH_PATH = Path(__file__).resolve().parent / "launch" / "system_launch.py"
+-spec = importlib.util.spec_from_file_location("bartender_system_launch", SYSTEM_LAUNCH_PATH)
+-module = importlib.util.module_from_spec(spec)
+-assert spec is not None and spec.loader is not None
+-spec.loader.exec_module(module)
+-main = module.main
++
++REPO_ROOT = Path(__file__).resolve().parent
++SYSTEM_LAUNCH_PATH = REPO_ROOT / "launch" / "system_launch.py"
++BOOTSTRAP_ENV_KEY = "BARTENDER_ENV_BOOTSTRAPPED"
++
++
++def _find_ros_setup():
++    preferred = [
++        Path("/opt/ros/jazzy/setup.bash"),
++        Path("/opt/ros/humble/setup.bash"),
++    ]
++    for path in preferred:
++        if path.is_file():
++            return path
++    ros_root = Path("/opt/ros")
++    if ros_root.is_dir():
++        for path in sorted(ros_root.glob("*/setup.bash"), reverse=True):
++            if path.is_file():
++                return path
++    return None
++
++
++def _find_workspace_setup():
++    for parent in REPO_ROOT.parents:
++        candidate = parent / "install" / "setup.bash"
++        if candidate.is_file():
++            return candidate
++    return None
++
++
++def _needs_ros_bootstrap():
++    return (
++        importlib.util.find_spec("ament_index_python") is None
++        or importlib.util.find_spec("launch") is None
++    )
++
++
++def _reexec_with_ros_env():
++    if os.environ.get(BOOTSTRAP_ENV_KEY) == "1":
++        return None
++    if not _needs_ros_bootstrap():
++        return None
++    ros_setup = _find_ros_setup()
++    if ros_setup is None:
++        return None
++    workspace_setup = _find_workspace_setup()
++    cmd_steps = [f"source {shlex.quote(str(ros_setup))}"]
++    if workspace_setup is not None:
++        cmd_steps.append(f"source {shlex.quote(str(workspace_setup))}")
++    cmd_steps.append(f"export {BOOTSTRAP_ENV_KEY}=1")
++    args = " ".join(shlex.quote(arg) for arg in sys.argv[1:])
++    cmd_steps.append(
++        f"exec {shlex.quote(sys.executable)} {shlex.quote(str(Path(__file__).resolve()))} {args}".rstrip()
++    )
++    completed = subprocess.run(["bash", "-lc", " && ".join(cmd_steps)])
++    return int(completed.returncode)
++
++
++def _load_launch_main():
++    spec = importlib.util.spec_from_file_location("bartender_system_launch", SYSTEM_LAUNCH_PATH)
++    if spec is None or spec.loader is None:
++        raise RuntimeError(f"Failed to load launch file: {SYSTEM_LAUNCH_PATH}")
++    module = importlib.util.module_from_spec(spec)
++    spec.loader.exec_module(module)
++    return module.main
+ 
+ 
+ if __name__ == "__main__":
++    bootstrap_exit = _reexec_with_ros_env()
++    if bootstrap_exit is not None:
++        raise SystemExit(bootstrap_exit)
++    main = _load_launch_main()
+     raise SystemExit(main(sys.argv[1:]))
+diff --git a/src/backend/gripper_drl_controller.py b/src/backend/gripper_drl_controller.py
+index d2ca8b9..075d51c 100644
+--- a/src/backend/gripper_drl_controller.py
++++ b/src/backend/gripper_drl_controller.py
+@@ -3,6 +3,7 @@ from rclpy.node import Node
+ from dsr_msgs2.srv import DrlStart
+ import textwrap
+ import time
++import os
+ import DR_init
+ 
+ # Gripper mapping for log display
+@@ -93,10 +94,20 @@ class GripperController:
+ 
+         self.node = node
+         self.robot_system = robot_system
+-        self.cli = self.node.create_client(DrlStart, f"/{namespace}/drl/drl_start")
+-
+-        self.node.get_logger().info(f"/{namespace}/drl/drl_start 서비스 대기 중...")
+-        while not self.cli.wait_for_service(timeout_sec=2.0):
++        ns = str(namespace or "dsr01").strip().strip("/")
++        self._service_name = f"/{ns}/dsr_controller2/drl/drl_start"
++        self.cli = self.node.create_client(DrlStart, self._service_name)
++        wait_timeout_sec = float(os.environ.get("GRIPPER_DRL_WAIT_TIMEOUT_SEC", "25.0"))
++        retry_interval_sec = float(os.environ.get("GRIPPER_DRL_WAIT_RETRY_SEC", "2.0"))
++        deadline = time.monotonic() + max(1.0, wait_timeout_sec)
++
++        self.node.get_logger().info(f"{self._service_name} 서비스 대기 중...")
++        while not self.cli.wait_for_service(timeout_sec=max(0.2, retry_interval_sec)):
++            if time.monotonic() >= deadline:
++                raise RuntimeError(
++                    f"그리퍼 DRL 서비스 준비 시간 초과: {self._service_name} "
++                    f"(timeout={wait_timeout_sec:.1f}s)"
++                )
+             self.node.get_logger().info("서비스가 아직 준비되지 않아 재시도합니다...")
+         self.node.get_logger().info("그리퍼 컨트롤러 준비 완료")
+ 
+diff --git a/src/backend/task_backend_node.py b/src/backend/task_backend_node.py
+index ad211ea..a14acfe 100644
+--- a/src/backend/task_backend_node.py
++++ b/src/backend/task_backend_node.py
+@@ -472,12 +472,12 @@ class RobotBackend:
+         self._last_state_watchdog_restart_at = 0.0
+         self._last_mode_source_scan_at = 0.0
+         self._mode_source_scan_interval_sec = 1.0
+-        self._set_robot_control_cli = None
+-        self._set_robot_mode_cli = None
+-        self._get_robot_mode_cli = None
++        self._set_robot_control_clients = {}
++        self._set_robot_mode_clients = {}
++        self._get_robot_mode_clients = {}
+         self._robot_mode_service_lock = threading.Lock()
+-        self._set_current_tcp_cli = None
+-        self._get_current_tcp_cli = None
++        self._set_current_tcp_clients = {}
++        self._get_current_tcp_clients = {}
+         self._tcp_service_lock = threading.Lock()
+         self._get_robot_system_clients = {}
+         self._startup_tool_tcp_config_done = False
+@@ -1265,9 +1265,8 @@ class RobotBackend:
+         if GetRobotSystem is not None and self._dsr_node is not None:
+             try:
+                 candidates = (
+-                    "system/get_robot_system",
+-                    f"/{ROBOT_ID}/system/get_robot_system",
+-                    "/system/get_robot_system",
++                    "dsr_controller2/system/get_robot_system",
++                    f"/{ROBOT_ID}/dsr_controller2/system/get_robot_system",
+                 )
+                 for _ in range(3):
+                     for srv_name in candidates:
+@@ -1470,36 +1469,96 @@ class RobotBackend:
+             return False, f"현재 상태가 {name}({code})라 동작 시작이 불가합니다."
+         return True, "ok"
+ 
++    def _service_name_candidates(self, relative_name: str):
++        rel = str(relative_name or "").strip().lstrip("/")
++        if not rel:
++            return tuple()
++        prefixed_rel = f"dsr_controller2/{rel}"
++        candidates = [
++            prefixed_rel,
++            f"/{ROBOT_ID}/{prefixed_rel}",
++        ]
++        seen = set()
++        ordered = []
++        for name in candidates:
++            if name in seen:
++                continue
++            seen.add(name)
++            ordered.append(name)
++        return tuple(ordered)
++
++    def _get_or_create_service_client(self, node, cache: dict, srv_type, srv_name: str):
++        cli = cache.get(srv_name)
++        if cli is None:
++            cli = node.create_client(srv_type, srv_name)
++            cache[srv_name] = cli
++        return cli
++
++    def _call_service_with_candidates(
++        self,
++        *,
++        node,
++        srv_type,
++        cache: dict,
++        relative_name: str,
++        req,
++        timeout_sec: float,
++        action_name: str,
++    ):
++        if node is None:
++            return False, None, None, f"{action_name} 서비스 노드가 준비되지 않았습니다."
++
++        wait_timeout = max(0.2, min(0.8, float(timeout_sec)))
++        call_timeout = max(0.2, float(timeout_sec))
++        last_msg = f"{relative_name} 서비스가 준비되지 않았습니다."
++
++        for srv_name in self._service_name_candidates(relative_name):
++            cli = self._get_or_create_service_client(node, cache, srv_type, srv_name)
++            if not cli.wait_for_service(timeout_sec=wait_timeout):
++                last_msg = f"{srv_name} 서비스가 준비되지 않았습니다."
++                continue
++
++            future = cli.call_async(req)
++            end_at = time.monotonic() + call_timeout
++            while time.monotonic() < end_at:
++                if future.done():
++                    break
++                time.sleep(0.05)
++
++            if not future.done():
++                last_msg = f"{srv_name} 서비스 응답 시간 초과"
++                continue
++            if future.exception() is not None:
++                last_msg = f"{srv_name} 서비스 예외: {future.exception()}"
++                continue
++
++            res = future.result()
++            if res is None or not bool(getattr(res, "success", False)):
++                last_msg = f"{srv_name} 서비스 실패"
++                continue
++            return True, res, srv_name, f"{action_name} 성공({srv_name})"
++
++        return False, None, None, last_msg
++
+     def _call_set_robot_control(self, control_value: int, timeout_sec: float = 2.0):
+         if SetRobotControl is None:
+             return False, "SetRobotControl 서비스 타입 import 실패"
+         if self._dsr_node is None:
+             return False, "DSR 노드가 없어 리셋 서비스를 호출할 수 없습니다."
+-
+-        if self._set_robot_control_cli is None:
+-            self._set_robot_control_cli = self._dsr_node.create_client(SetRobotControl, "system/set_robot_control")
+-        if not self._set_robot_control_cli.wait_for_service(timeout_sec=0.8):
+-            return False, "system/set_robot_control 서비스가 준비되지 않았습니다."
+-
+         req = SetRobotControl.Request()
+         req.robot_control = int(control_value)
+-        future = self._set_robot_control_cli.call_async(req)
+-
+-        end_at = time.monotonic() + max(0.2, timeout_sec)
+-        while time.monotonic() < end_at:
+-            if future.done():
+-                break
+-            time.sleep(0.05)
+-
+-        if not future.done():
+-            return False, f"리셋 서비스 응답 시간 초과(control={control_value})"
+-        if future.exception() is not None:
+-            return False, f"리셋 서비스 예외(control={control_value}): {future.exception()}"
+-
+-        res = future.result()
+-        if res is None or not bool(getattr(res, "success", False)):
+-            return False, f"리셋 서비스 실패(control={control_value})"
+-        return True, f"리셋 서비스 성공(control={control_value})"
++        ok, _res, srv_name, msg = self._call_service_with_candidates(
++            node=self._dsr_node,
++            srv_type=SetRobotControl,
++            cache=self._set_robot_control_clients,
++            relative_name="system/set_robot_control",
++            req=req,
++            timeout_sec=timeout_sec,
++            action_name="리셋 서비스",
++        )
++        if not ok:
++            return False, f"{msg}(control={control_value})"
++        return True, f"리셋 서비스 성공(control={control_value}, srv={srv_name})"
+ 
+     def _call_set_robot_mode(self, mode_value: int, timeout_sec: float = 2.0):
+         if SetRobotMode is None:
+@@ -1508,31 +1567,20 @@ class RobotBackend:
+             return False, "모드 서비스 노드가 없어 모드 서비스를 호출할 수 없습니다."
+ 
+         with self._robot_mode_service_lock:
+-            if self._set_robot_mode_cli is None:
+-                self._set_robot_mode_cli = self._mode_node.create_client(SetRobotMode, "system/set_robot_mode")
+-            wait_timeout = max(0.8, min(2.0, float(timeout_sec)))
+-            if not self._set_robot_mode_cli.wait_for_service(timeout_sec=wait_timeout):
+-                return False, "system/set_robot_mode 서비스가 준비되지 않았습니다."
+-
+             req = SetRobotMode.Request()
+             req.robot_mode = int(mode_value)
+-            future = self._set_robot_mode_cli.call_async(req)
+-
+-            end_at = time.monotonic() + max(0.2, timeout_sec)
+-            while time.monotonic() < end_at:
+-                if future.done():
+-                    break
+-                time.sleep(0.05)
+-
+-            if not future.done():
+-                return False, f"모드 서비스 응답 시간 초과(mode={mode_value})"
+-            if future.exception() is not None:
+-                return False, f"모드 서비스 예외(mode={mode_value}): {future.exception()}"
+-
+-            res = future.result()
+-            if res is None or not bool(getattr(res, "success", False)):
+-                return False, f"모드 서비스 실패(mode={mode_value})"
+-            return True, f"모드 서비스 성공(mode={mode_value})"
++            ok, _res, srv_name, msg = self._call_service_with_candidates(
++                node=self._mode_node,
++                srv_type=SetRobotMode,
++                cache=self._set_robot_mode_clients,
++                relative_name="system/set_robot_mode",
++                req=req,
++                timeout_sec=timeout_sec,
++                action_name="모드 서비스",
++            )
++            if not ok:
++                return False, f"{msg}(mode={mode_value})"
++            return True, f"모드 서비스 성공(mode={mode_value}, srv={srv_name})"
+ 
+     def _call_get_robot_mode(self, timeout_sec: float = 2.0):
+         if GetRobotMode is None:
+@@ -1541,34 +1589,23 @@ class RobotBackend:
+             return False, None, "모드 서비스 노드가 없어 모드 조회 서비스를 호출할 수 없습니다."
+ 
+         with self._robot_mode_service_lock:
+-            if self._get_robot_mode_cli is None:
+-                self._get_robot_mode_cli = self._mode_node.create_client(GetRobotMode, "system/get_robot_mode")
+-            wait_timeout = max(0.8, min(2.0, float(timeout_sec)))
+-            if not self._get_robot_mode_cli.wait_for_service(timeout_sec=wait_timeout):
+-                return False, None, "system/get_robot_mode 서비스가 준비되지 않았습니다."
+-
+             req = GetRobotMode.Request()
+-            future = self._get_robot_mode_cli.call_async(req)
+-
+-            end_at = time.monotonic() + max(0.2, timeout_sec)
+-            while time.monotonic() < end_at:
+-                if future.done():
+-                    break
+-                time.sleep(0.05)
+-
+-            if not future.done():
+-                return False, None, "모드 조회 서비스 응답 시간 초과"
+-            if future.exception() is not None:
+-                return False, None, f"모드 조회 서비스 예외: {future.exception()}"
+-
+-            res = future.result()
+-            if res is None or not bool(getattr(res, "success", False)):
+-                return False, None, "모드 조회 서비스 실패"
++            ok, res, srv_name, msg = self._call_service_with_candidates(
++                node=self._mode_node,
++                srv_type=GetRobotMode,
++                cache=self._get_robot_mode_clients,
++                relative_name="system/get_robot_mode",
++                req=req,
++                timeout_sec=timeout_sec,
++                action_name="모드 조회 서비스",
++            )
++            if not ok:
++                return False, None, msg
+             try:
+                 mode_value = int(getattr(res, "robot_mode", -1))
+             except Exception:
+                 return False, None, "모드 조회 응답 파싱 실패"
+-            return True, mode_value, f"모드 조회 성공(mode={mode_value})"
++            return True, mode_value, f"모드 조회 성공(mode={mode_value}, srv={srv_name})"
+ 
+     def sync_robot_mode_once(self, force: bool = False, timeout_sec: float = 1.5):
+         with self._robot_mode_lock:
+@@ -1657,31 +1694,20 @@ class RobotBackend:
+             return False, None, "모드 서비스 노드가 없어 TCP 조회 서비스를 호출할 수 없습니다."
+ 
+         with self._tcp_service_lock:
+-            if self._get_current_tcp_cli is None:
+-                self._get_current_tcp_cli = self._mode_node.create_client(GetCurrentTcp, "tcp/get_current_tcp")
+-            wait_timeout = max(0.8, min(2.0, float(timeout_sec)))
+-            if not self._get_current_tcp_cli.wait_for_service(timeout_sec=wait_timeout):
+-                return False, None, "tcp/get_current_tcp 서비스가 준비되지 않았습니다."
+-
+             req = GetCurrentTcp.Request()
+-            future = self._get_current_tcp_cli.call_async(req)
+-
+-            end_at = time.monotonic() + max(0.2, timeout_sec)
+-            while time.monotonic() < end_at:
+-                if future.done():
+-                    break
+-                time.sleep(0.05)
+-
+-            if not future.done():
+-                return False, None, "TCP 조회 서비스 응답 시간 초과"
+-            if future.exception() is not None:
+-                return False, None, f"TCP 조회 서비스 예외: {future.exception()}"
+-
+-            res = future.result()
+-            if res is None or not bool(getattr(res, "success", False)):
+-                return False, None, "TCP 조회 서비스 실패"
++            ok, res, srv_name, msg = self._call_service_with_candidates(
++                node=self._mode_node,
++                srv_type=GetCurrentTcp,
++                cache=self._get_current_tcp_clients,
++                relative_name="tcp/get_current_tcp",
++                req=req,
++                timeout_sec=timeout_sec,
++                action_name="TCP 조회 서비스",
++            )
++            if not ok:
++                return False, None, msg
+             tcp_name = str(getattr(res, "info", "") or "").strip()
+-            return True, tcp_name, f"TCP 조회 성공(name='{tcp_name}')"
++            return True, tcp_name, f"TCP 조회 성공(name='{tcp_name}', srv={srv_name})"
+ 
+     def _call_set_current_tcp(self, tcp_name: str, timeout_sec: float = 2.0):
+         if SetCurrentTcp is None:
+@@ -1691,31 +1717,20 @@ class RobotBackend:
+ 
+         name = str(tcp_name or "")
+         with self._tcp_service_lock:
+-            if self._set_current_tcp_cli is None:
+-                self._set_current_tcp_cli = self._mode_node.create_client(SetCurrentTcp, "tcp/set_current_tcp")
+-            wait_timeout = max(0.8, min(2.0, float(timeout_sec)))
+-            if not self._set_current_tcp_cli.wait_for_service(timeout_sec=wait_timeout):
+-                return False, "tcp/set_current_tcp 서비스가 준비되지 않았습니다."
+-
+             req = SetCurrentTcp.Request()
+             req.name = name
+-            future = self._set_current_tcp_cli.call_async(req)
+-
+-            end_at = time.monotonic() + max(0.2, timeout_sec)
+-            while time.monotonic() < end_at:
+-                if future.done():
+-                    break
+-                time.sleep(0.05)
+-
+-            if not future.done():
+-                return False, f"TCP 설정 서비스 응답 시간 초과(name='{name}')"
+-            if future.exception() is not None:
+-                return False, f"TCP 설정 서비스 예외(name='{name}'): {future.exception()}"
+-
+-            res = future.result()
+-            if res is None or not bool(getattr(res, "success", False)):
+-                return False, f"TCP 설정 서비스 실패(name='{name}')"
+-            return True, f"TCP 설정 서비스 성공(name='{name}')"
++            ok, _res, srv_name, msg = self._call_service_with_candidates(
++                node=self._mode_node,
++                srv_type=SetCurrentTcp,
++                cache=self._set_current_tcp_clients,
++                relative_name="tcp/set_current_tcp",
++                req=req,
++                timeout_sec=timeout_sec,
++                action_name="TCP 설정 서비스",
++            )
++            if not ok:
++                return False, f"{msg}(name='{name}')"
++            return True, f"TCP 설정 서비스 성공(name='{name}', srv={srv_name})"
+ 
+     def sync_current_tcp_once(self, force: bool = False, timeout_sec: float = 1.5):
+         now = time.monotonic()
+diff --git a/src/frontend/developer_frontend.py b/src/frontend/developer_frontend.py
+index 5c7c807..4a6c932 100644
+--- a/src/frontend/developer_frontend.py
++++ b/src/frontend/developer_frontend.py
+@@ -76,6 +76,10 @@ try:
+     from rclpy.callback_groups import ReentrantCallbackGroup
+ except Exception:
+     ReentrantCallbackGroup = None
++try:
++    from rclpy.exceptions import RCLError
++except Exception:
++    RCLError = Exception
+ import numpy as np
+ 
+ # Project layout root
+@@ -367,6 +371,8 @@ class App(QMainWindow, form):
+         super().__init__()
+         self.setupUi(self)
+         self._status_row_ready = False
++        self._closing = False
++        self._ui_tick_error_last_at = {}
+ 
+         self.backend = backend
+         self._auto_start_backend = bool(auto_start_backend)
+@@ -492,40 +498,56 @@ class App(QMainWindow, form):
+             threading.excepthook = self._handle_thread_exception
+ 
+         self._log_timer = QTimer(self)
+-        self._log_timer.timeout.connect(self._flush_log_buffer)
++        self._log_timer.timeout.connect(lambda: self._safe_ui_tick("log_flush", self._flush_log_buffer))
+         self._log_timer.start(100)
+         self.append_log("[시작] 메인창 실행 완료\n")
+         self.append_log("[시작] 백엔드 초기화 대기 중...\n")
+ 
+         self._robot_status_timer = QTimer(self)
+-        self._robot_status_timer.timeout.connect(self._refresh_robot_status)
++        self._robot_status_timer.timeout.connect(
++            lambda: self._safe_ui_tick("robot_status", self._refresh_robot_status)
++        )
+         self._robot_status_timer.start(250)
+         self._vision_status_timer_1 = QTimer(self)
+-        self._vision_status_timer_1.timeout.connect(lambda: self._refresh_vision_status_panel(1))
++        self._vision_status_timer_1.timeout.connect(
++            lambda: self._safe_ui_tick("vision_status_1", self._refresh_vision_status_panel, 1)
++        )
+         self._vision_status_timer_1.start(300)
+         self._vision_status_timer_2 = QTimer(self)
+-        self._vision_status_timer_2.timeout.connect(lambda: self._refresh_vision_status_panel(2))
++        self._vision_status_timer_2.timeout.connect(
++            lambda: self._safe_ui_tick("vision_status_2", self._refresh_vision_status_panel, 2)
++        )
+         self._vision_status_timer_2.start(300)
+         self._status_timer = self._robot_status_timer
+         self._vision_status_timer = None
+         self._top_status_anim_timer = QTimer(self)
+-        self._top_status_anim_timer.timeout.connect(self._tick_top_status_animation)
++        self._top_status_anim_timer.timeout.connect(
++            lambda: self._safe_ui_tick("top_status_anim", self._tick_top_status_animation)
++        )
+         self._top_status_anim_timer.start(30)
+         self._calib_status_blink_timer = QTimer(self)
+-        self._calib_status_blink_timer.timeout.connect(self._tick_calibration_status_blink)
++        self._calib_status_blink_timer.timeout.connect(
++            lambda: self._safe_ui_tick("calib_blink", self._tick_calibration_status_blink)
++        )
+         self._calib_status_blink_timer.start(500)
+ 
+         self._pos_timer = QTimer(self)
+-        self._pos_timer.timeout.connect(self._refresh_positions)
++        self._pos_timer.timeout.connect(lambda: self._safe_ui_tick("positions", self._refresh_positions))
+         self._pos_timer.start(200)
+         self._current_tool_timer = QTimer(self)
+-        self._current_tool_timer.timeout.connect(self._tick_current_tool_sync)
++        self._current_tool_timer.timeout.connect(
++            lambda: self._safe_ui_tick("current_tool", self._tick_current_tool_sync)
++        )
+         self._current_tool_timer.start(700)
+         self._vision_render_timer_1 = QTimer(self)
+-        self._vision_render_timer_1.timeout.connect(self._drain_pending_vision_frame_1)
++        self._vision_render_timer_1.timeout.connect(
++            lambda: self._safe_ui_tick("vision_render_1", self._drain_pending_vision_frame_1)
++        )
+         self._vision_render_timer_1.start(VISION_RENDER_INTERVAL_MS)
+         self._vision_render_timer_2 = QTimer(self)
+-        self._vision_render_timer_2.timeout.connect(self._drain_pending_vision_frame_2)
++        self._vision_render_timer_2.timeout.connect(
++            lambda: self._safe_ui_tick("vision_render_2", self._drain_pending_vision_frame_2)
++        )
+         self._vision_render_timer_2.start(VISION_RENDER_INTERVAL_MS)
+ 
+         self._yolo_thread = None
+@@ -942,6 +964,42 @@ class App(QMainWindow, form):
+             getattr(args, "exc_traceback", None),
+         )
+ 
++    def _is_shutdown_exception(self, err: Exception) -> bool:
++        if isinstance(err, RCLError):
++            return True
++        msg = str(err or "").lower()
++        if not msg:
++            return False
++        markers = (
++            "context is invalid",
++            "rcl node's context is invalid",
++            "destruction was requested",
++            "cannot use destroyable because destruction was requested",
++            "failed to create subscription",
++            "failed to create guard condition",
++            "rcl_shutdown already called",
++        )
++        return any(marker in msg for marker in markers)
++
++    def _log_ui_tick_exception(self, tick_name: str, err: Exception):
++        now = time.monotonic()
++        key = str(tick_name or "ui_tick")
++        last_at = float(self._ui_tick_error_last_at.get(key, 0.0))
++        if (now - last_at) < 3.0:
++            return
++        self._ui_tick_error_last_at[key] = now
++        self.append_log(f"[UI] {key} 처리 중 예외: {err}\n")
++
++    def _safe_ui_tick(self, tick_name: str, fn, *args, **kwargs):
++        if getattr(self, "_closing", False):
++            return
++        try:
++            fn(*args, **kwargs)
++        except Exception as e:
++            if getattr(self, "_closing", False) or self._is_shutdown_exception(e):
++                return
++            self._log_ui_tick_exception(str(tick_name), e)
++
+     def _setup_top_status_row(self):
+         self._top_status_panel = getattr(self, "top_status_panel", None)
+         self._top_status_mid_line = getattr(self, "top_status_mid_line", None)
+@@ -5949,9 +6007,29 @@ class App(QMainWindow, form):
+         slot = self._runtime_camera_slot_for_serial(serial)
+         return "/camera2/camera/color/image_raw" if slot == 2 else CALIB_VISION_TOPIC_PRIMARY
+ 
+-    def _assigned_depth_topic_for_serial(self, serial):
++    def _assigned_depth_topic_for_serial(self, serial, node=None):
+         slot = self._runtime_camera_slot_for_serial(serial)
+-        return "/camera2/camera/aligned_depth_to_color/image_raw" if slot == 2 else "/camera/camera/aligned_depth_to_color/image_raw"
++        if slot == 2:
++            candidates = [
++                "/camera2/camera/aligned_depth_to_color/image_raw",
++                "/camera2/aligned_depth_to_color/image_raw",
++                "/camera2/camera/depth/image_rect_raw",
++                "/camera2/depth/image_rect_raw",
++                "/camera2/camera/depth/image_raw",
++            ]
++        else:
++            candidates = [
++                "/camera/camera/aligned_depth_to_color/image_raw",
++                "/camera/aligned_depth_to_color/image_raw",
++                "/camera/camera/depth/image_rect_raw",
++                "/camera/depth/image_rect_raw",
++                "/camera/camera/depth/image_raw",
++            ]
++        if node is not None:
++            for t in candidates:
++                if self._is_topic_alive(node, t):
++                    return t
++        return candidates[0]
+ 
+     def _assigned_raw_topic_for_serial(self, serial, node):
+         slot = self._runtime_camera_slot_for_serial(serial)
+@@ -6290,7 +6368,7 @@ class App(QMainWindow, form):
+             "--image-topic",
+             self._assigned_raw_topic_for_serial(serial, node),
+             "--depth-topic",
+-            self._assigned_depth_topic_for_serial(serial),
++            self._assigned_depth_topic_for_serial(serial, node),
+             "--output-meta-topic",
+             self._vision_output_meta_topic(panel),
+             "--process-hz",
+@@ -6328,6 +6406,12 @@ class App(QMainWindow, form):
+         except Exception as e:
+             self.append_log(f"[비전{panel}] 메타 프로세스 시작 실패: {e}\n")
+             return False
++        # Fail fast if helper exits immediately (missing dependency/model/topic args, etc.).
++        time.sleep(0.2)
++        exit_code = proc.poll()
++        if exit_code is not None:
++            self.append_log(f"[비전{panel}] 메타 프로세스 즉시 종료(code={exit_code})\n")
++            return False
+         if panel == 2:
+             self._external_vision_proc_2 = proc
+             self._external_vision_cmd_2 = list(cmd)
+@@ -6433,7 +6517,7 @@ class App(QMainWindow, form):
+             "--image-topic",
+             self._assigned_raw_topic_for_serial(serial, node),
+             "--depth-topic",
+-            self._assigned_depth_topic_for_serial(serial),
++            self._assigned_depth_topic_for_serial(serial, node),
+             "--camera-info-topic",
+             self._assigned_info_topic_for_serial(serial, node),
+             "--output-meta-topic",
+@@ -6764,7 +6848,7 @@ class App(QMainWindow, form):
+                 )
+                 self._calib_meta_topic_in_use_2 = meta_topic_2
+             if self._vision_panel_needs_depth(2):
+-                depth_topic_2 = self._assigned_depth_topic_for_serial(self._vision_assigned_serial_2)
++                depth_topic_2 = self._assigned_depth_topic_for_serial(self._vision_assigned_serial_2, node)
+                 self._vision_depth_sub_2 = node.create_subscription(
+                     RosImageMsg, depth_topic_2, lambda msg, token=stream_token: self._on_vision_depth_msg_2(msg, token), image_qos, **sub_kwargs
+                 )
+@@ -6820,7 +6904,7 @@ class App(QMainWindow, form):
+                 )
+                 self._calib_meta_topic_in_use_1 = meta_topic_1
+             if self._vision_panel_needs_depth(1):
+-                depth_topic = self._assigned_depth_topic_for_serial(self._vision_assigned_serial_1)
++                depth_topic = self._assigned_depth_topic_for_serial(self._vision_assigned_serial_1, node)
+                 self._vision_depth_sub = node.create_subscription(
+                     RosImageMsg, depth_topic, lambda msg, token=stream_token: self._on_vision_depth_msg(msg, token), image_qos, **sub_kwargs
+                 )
+diff --git a/src/vision/glass_fill_level.py b/src/vision/glass_fill_level.py
+index 00cfce6..e81b30d 100644
+--- a/src/vision/glass_fill_level.py
++++ b/src/vision/glass_fill_level.py
+@@ -23,10 +23,28 @@ DEFAULT_OUTPUT_TOPIC = os.environ.get("VISION_VOLUME_META_TOPIC_2", "/vision2/vo
+ DEFAULT_WEIGHTS = model_path("cam_2.pt")
+ 
+ 
++def _enable_legacy_model_aliases():
++    # Older segmentation checkpoints may serialize custom class names.
++    # Map them to current ultralytics module symbols for compatibility.
++    try:
++        import ultralytics.nn.modules.head as _head
++        if (not hasattr(_head, "Segment26")) and hasattr(_head, "Segment"):
++            _head.Segment26 = _head.Segment
++    except Exception:
++        pass
++    try:
++        import ultralytics.nn.modules.block as _block
++        if (not hasattr(_block, "Proto26")) and hasattr(_block, "Proto"):
++            _block.Proto26 = _block.Proto
++    except Exception:
++        pass
++
++
+ class GlassFillLevelProcess(BaseVisionMetaProcess):
+     def __init__(self, args):
+         self.mode = "volume"
+         self.weights_path = os.path.abspath(str(args.weights or "").strip() or DEFAULT_WEIGHTS)
++        _enable_legacy_model_aliases()
+         self.model = YOLO(self.weights_path)
+         self.conf = float(args.conf) if float(args.conf) > 0.0 else 0.25
+         self.height_ema_alpha = 0.2
+diff --git a/src/vision/glass_fill_level_preview.py b/src/vision/glass_fill_level_preview.py
+index 264b9e8..6f8d0df 100644
+--- a/src/vision/glass_fill_level_preview.py
++++ b/src/vision/glass_fill_level_preview.py
+@@ -33,12 +33,30 @@ CLASS_COLORS = {
+ }
+ 
+ 
++def _enable_legacy_model_aliases():
++    # Older segmentation checkpoints may serialize custom class names.
++    # Map them to current ultralytics module symbols for compatibility.
++    try:
++        import ultralytics.nn.modules.head as _head
++        if (not hasattr(_head, "Segment26")) and hasattr(_head, "Segment"):
++            _head.Segment26 = _head.Segment
++    except Exception:
++        pass
++    try:
++        import ultralytics.nn.modules.block as _block
++        if (not hasattr(_block, "Proto26")) and hasattr(_block, "Proto"):
++            _block.Proto26 = _block.Proto
++    except Exception:
++        pass
++
++
+ class GlassFillLevelPreview(Node):
+     def __init__(self):
+         super().__init__("glass_fill_level_preview")
+         self.depth_image = None
+         self.color_image = None
+         self.depth_scale = 0.001
++        _enable_legacy_model_aliases()
+         self.model = YOLO(DEFAULT_WEIGHTS)
+         self.bottle_class_name = "bottle"
+         self.known_heights_px = np.array([0, 71, 105, 140, 180, 206, 253, 290, 338, 400, 450], dtype=np.float32)
+diff --git a/src/vision/vision_meta_common.py b/src/vision/vision_meta_common.py
+index 09e5ce1..d229e3f 100644
+--- a/src/vision/vision_meta_common.py
++++ b/src/vision/vision_meta_common.py
+@@ -279,7 +279,9 @@ class BaseVisionMetaProcess(Node):
+     def _tick(self):
+         if self._shutting_down:
+             return
+-        if self.latest_color is None or self.latest_depth is None:
++        # Some deployments may temporarily miss depth topics; run inference with color-only
++        # and keep depth-derived fields as None instead of halting the whole metadata stream.
++        if self.latest_color is None:
+             return
+         if self.latest_seq == self.last_processed_seq:
+             return

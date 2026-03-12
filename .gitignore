@@ -55,9 +55,4 @@ Thumbs.db
 build/
 install/
 log/
-robot/build/
-robot/install/
-robot/log/
-robot/src/**/build/
-robot/src/**/install/
-robot/src/**/log/
+doosan-robot2

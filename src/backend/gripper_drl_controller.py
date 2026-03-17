@@ -111,7 +111,20 @@ class GripperController:
             self.node.get_logger().info("서비스가 아직 준비되지 않아 재시도합니다...")
         self.node.get_logger().info("그리퍼 컨트롤러 준비 완료")
 
-    def _send_drl_script(self, code: str) -> bool:
+    def _send_drl_script(self, code: str, best_effort: bool = False) -> bool:
+        if not rclpy.ok():
+            if best_effort:
+                self.node.get_logger().warning("ROS 컨텍스트 종료 상태: drl_start 호출 생략(best-effort)")
+                return False
+            self.node.get_logger().error("ROS 컨텍스트가 유효하지 않아 drl_start 호출 불가")
+            return False
+        try:
+            if hasattr(self.cli, "service_is_ready") and (not bool(self.cli.service_is_ready())):
+                if best_effort:
+                    self.node.get_logger().warning("drl_start 서비스 미준비: 종료 요청 생략(best-effort)")
+                    return False
+        except Exception:
+            pass
         req = DrlStart.Request()
         req.robot_system = self.robot_system
         req.code = code
@@ -127,11 +140,17 @@ class GripperController:
             time.sleep(0.02)
 
         if not future.done():
-            self.node.get_logger().error("서비스 호출 시간 초과(drl_start)")
+            if best_effort:
+                self.node.get_logger().warning("서비스 호출 시간 초과(drl_start) - 종료 중 무시")
+            else:
+                self.node.get_logger().error("서비스 호출 시간 초과(drl_start)")
             return False
 
         if future.exception() is not None:
-            self.node.get_logger().error(f"서비스 호출 실패: {future.exception()}")
+            if best_effort:
+                self.node.get_logger().warning(f"서비스 호출 실패(종료 중 무시): {future.exception()}")
+            else:
+                self.node.get_logger().error(f"서비스 호출 실패: {future.exception()}")
             return False
 
         res = future.result()
@@ -139,9 +158,14 @@ class GripperController:
         if not ok:
             head = str(code).strip().splitlines()
             snippet = head[0] if head else ""
-            self.node.get_logger().error(
-                f"drl_start 응답 실패(success=False, robot_system={self.robot_system}, code_head={snippet!r})"
-            )
+            if best_effort:
+                self.node.get_logger().warning(
+                    f"drl_start 응답 실패(종료 중 무시, robot_system={self.robot_system}, code_head={snippet!r})"
+                )
+            else:
+                self.node.get_logger().error(
+                    f"drl_start 응답 실패(success=False, robot_system={self.robot_system}, code_head={snippet!r})"
+                )
         return ok
 
     def initialize(self) -> bool:
@@ -176,12 +200,15 @@ class GripperController:
             self.node.get_logger().error(f"그리퍼 이동 명령 전송 실패(pulse={stroke}, distance={dist_mm:.2f}mm)")
         return success
 
-    def terminate(self) -> bool:
+    def terminate(self, best_effort: bool = False) -> bool:
         self.node.get_logger().info("그리퍼 연결 종료를 시작합니다...")
         terminate_script = "flange_serial_close()"
-        success = self._send_drl_script(terminate_script)
+        success = self._send_drl_script(terminate_script, best_effort=bool(best_effort))
         if success:
             self.node.get_logger().info("그리퍼 연결 종료 성공")
         else:
-            self.node.get_logger().error("그리퍼 연결 종료 실패")
+            if best_effort:
+                self.node.get_logger().warning("그리퍼 연결 종료 생략/실패(종료 중 무시)")
+            else:
+                self.node.get_logger().error("그리퍼 연결 종료 실패")
         return success

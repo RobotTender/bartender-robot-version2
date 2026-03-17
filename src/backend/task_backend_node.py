@@ -3,7 +3,12 @@ from rclpy.node import Node
 import time
 import math
 import os
+import glob
 import csv
+import json
+import re
+import subprocess
+import sys
 
 import DR_init
 try:
@@ -23,6 +28,14 @@ try:
 except Exception:
     RobotStateRt = None
 from sensor_msgs.msg import JointState
+try:
+    from sensor_msgs.msg import CameraInfo as RosCameraInfoMsg
+except Exception:
+    RosCameraInfoMsg = None
+try:
+    from std_msgs.msg import String as RosStringMsg
+except Exception:
+    RosStringMsg = None
 try:
     from dsr_msgs2.srv import SetRobotControl
 except Exception:
@@ -47,6 +60,14 @@ try:
     from dsr_msgs2.srv import SetCurrentTcp
 except Exception:
     SetCurrentTcp = None
+try:
+    from dsr_msgs2.srv import ServoOff
+except Exception:
+    ServoOff = None
+try:
+    from dsr_msgs2.srv import MoveStop
+except Exception:
+    MoveStop = None
 
 ROBOT_ID = "dsr01"
 ROBOT_MODEL = "e0509"
@@ -95,8 +116,146 @@ GRIPPER_RELEASE_DISTANCE_MM = gripper_pulse_to_distance_mm(0)
 HOME_POSJ = (0.00, -33.24, 104.14, -178.48, -22.49, 90.49)
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.abspath(os.path.join(CURRENT_DIR, "..", ".."))
+SRC_ROOT = os.path.join(PROJECT_ROOT, "src")
+if SRC_ROOT in sys.path:
+    try:
+        sys.path.remove(SRC_ROOT)
+    except Exception:
+        pass
+sys.path.insert(0, SRC_ROOT)
+
+
+def _normalize_volume_condition(condition: str) -> str:
+    text = str(condition or "").strip().lower()
+    if text in ("gt", "gte", "eq", "lt", "lte"):
+        return text
+    if text == ">":
+        return "gt"
+    if text == ">=":
+        return "gte"
+    if text in ("=", "=="):
+        return "eq"
+    if text == "<":
+        return "lt"
+    if text == "<=":
+        return "lte"
+    return "gte"
+
+
+def _format_volume_condition(condition: str, target_volume_ml: float) -> str:
+    cond = _normalize_volume_condition(condition)
+    op = {
+        "gt": ">",
+        "gte": ">=",
+        "eq": "==",
+        "lt": "<",
+        "lte": "<=",
+    }.get(cond, ">=")
+    return f"{op}{float(target_volume_ml):.1f}ml"
+
+
+def _resolve_volume_condition_target(condition: str, target_volume_ml):
+    cond_text = str(condition or "").strip().lower()
+    target = None
+    if target_volume_ml is not None:
+        target = float(target_volume_ml)
+
+    if cond_text:
+        norm = _normalize_volume_condition(cond_text)
+        if cond_text in ("gt", "gte", "eq", "lt", "lte", ">", ">=", "<", "<=", "=", "=="):
+            cond = norm
+        else:
+            compact = cond_text.replace(" ", "").replace("ml", "")
+            match = re.match(r"^(>=|<=|>|<|==|=)(-?\d+(?:\.\d+)?)$", compact)
+            if not match:
+                match = re.match(r"^(-?\d+(?:\.\d+)?)(>=|<=|>|<|==|=)$", compact)
+                if match:
+                    target = float(match.group(1))
+                    cond = _normalize_volume_condition(match.group(2))
+                else:
+                    raise ValueError(f"지원하지 않는 용량 조건식: {condition}")
+            else:
+                cond = _normalize_volume_condition(match.group(1))
+                target = float(match.group(2))
+    else:
+        cond = "gte"
+
+    if target is None:
+        raise ValueError("target_volume_ml 또는 조건식(예: >=100, 100>)이 필요합니다.")
+    return cond, float(target)
+
+
+def _is_volume_condition_met(
+    current_volume_ml: float,
+    target_volume_ml: float,
+    *,
+    condition: str = "gte",
+    tolerance_ml: float = 0.5,
+) -> bool:
+    cond = _normalize_volume_condition(condition)
+    cur = float(current_volume_ml)
+    tgt = float(target_volume_ml)
+    tol = max(0.0, float(tolerance_ml))
+    if cond == "gt":
+        return cur > tgt
+    if cond == "gte":
+        return cur >= tgt
+    if cond == "lt":
+        return cur < tgt
+    if cond == "lte":
+        return cur <= tgt
+    # eq
+    return abs(cur - tgt) <= tol
+
+# `src/backend/bartender_action` (legacy)와 `src/bartender_action`(현재) 패키지명이 겹친다.
+# 우선순위를 강제로 `src/bartender_action`으로 맞춘다.
+_legacy_bartender_pkg = os.path.join(CURRENT_DIR, "bartender_action")
+_loaded_bartender_pkg = sys.modules.get("bartender_action")
+_loaded_bartender_file = str(getattr(_loaded_bartender_pkg, "__file__", "") or "")
+if _loaded_bartender_file.startswith(_legacy_bartender_pkg):
+    for _mod_name in list(sys.modules.keys()):
+        if _mod_name == "bartender_action" or _mod_name.startswith("bartender_action."):
+            try:
+                del sys.modules[_mod_name]
+            except Exception:
+                pass
+from order_integration.voice_order_route import run_voice_order_request
+from bartender_action.bartender_sequence_manager import BartenderSequenceApiServer, BartenderSequenceManager
+try:
+    from bartender_action.robot_action_planner import run_robot_action as run_bartender_robot_action
+except Exception:
+    run_bartender_robot_action = None
+
 PARAM_DIR = os.path.join(PROJECT_ROOT, "config")
 PARAM_FILE = os.path.join(PARAM_DIR, "parameter.csv")
+CALIB_DIR = os.path.join(PARAM_DIR, "calibration")
+MENU_OFFSET_CONFIG_PATH = os.path.join(PARAM_DIR, "menu_xyz_offsets.json")
+VISION1_META_TOPIC = os.environ.get("VISION_OBJECT_META_TOPIC_1", "/camera/camera_1/detection/object/meta")
+VISION1_CAMERA_INFO_TOPIC_PRIMARY = os.environ.get("CALIB_CAMERA_INFO_TOPIC", "/camera/camera_1/color/camera_info")
+VISION2_META_TOPIC = os.environ.get("VISION_VOLUME_META_TOPIC_2", "/camera/camera_2/detection/volume/meta")
+BARTENDER_ROBOT_ACTION_SCRIPT_PATH = os.path.join(
+    PROJECT_ROOT, "src", "backend", "bartender_action", "robot_action_planner.py"
+)
+BARTENDER_ROBOT_ACTION_SCRIPT_TIMEOUT_SEC = max(
+    2.0, float(os.environ.get("BARTENDER_ROBOT_ACTION_SCRIPT_TIMEOUT_SEC", "12.0"))
+)
+VOICE_ORDER_RUNTIME_TIMEOUT_SEC = max(
+    10.0, float(os.environ.get("BARTENDER_VOICE_RUNTIME_TIMEOUT_SEC", "90.0"))
+)
+BARTENDER_ROBOT_ACTION_NATIVE = str(os.environ.get("BARTENDER_ROBOT_ACTION_NATIVE", "1")).strip().lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+)
+VISION1_META_STALE_SEC = max(0.2, float(os.environ.get("BARTENDER_VISION1_META_STALE_SEC", "2.0")))
+VISION2_META_STALE_SEC = max(0.2, float(os.environ.get("BARTENDER_VISION2_META_STALE_SEC", "2.0")))
+VISION1_META_WAIT_SEC = max(0.5, float(os.environ.get("BARTENDER_VISION1_META_WAIT_SEC", "5.0")))
+BARTENDER_SEQUENCE_API_HOST = str(os.environ.get("BARTENDER_SEQUENCE_API_HOST", "127.0.0.1") or "").strip() or "127.0.0.1"
+try:
+    BARTENDER_SEQUENCE_API_PORT = int(os.environ.get("BARTENDER_SEQUENCE_API_PORT", "8765"))
+except Exception:
+    BARTENDER_SEQUENCE_API_PORT = 8765
 
 DR_init.__dsr__id = ROBOT_ID
 DR_init.__dsr__model = ROBOT_MODEL
@@ -127,6 +286,15 @@ PICK_PLACE_FIXED_ABC_ENV = os.environ.get("PICK_PLACE_FIXED_ABC", "").strip()
 ROBOT_TOOL_NAME = os.environ.get("ROBOT_TOOL_NAME", "").strip()
 ROBOT_TCP_NAME = os.environ.get("ROBOT_TCP_NAME", "").strip()
 ROBOT_MODE_HINT = os.environ.get("BARTENDER_ROBOT_MODE_HINT", "").strip().upper()
+BACKEND_NODE_NAME = str(os.environ.get("BARTENDER_BACKEND_NODE_NAME", "bartender_backend") or "").strip() or "bartender_backend"
+DSR_BRIDGE_NODE_NAME = (
+    str(os.environ.get("BARTENDER_DSR_BRIDGE_NODE_NAME", "bartender_robot_bridge") or "").strip()
+    or "bartender_robot_bridge"
+)
+MODE_MONITOR_NODE_NAME = (
+    str(os.environ.get("BARTENDER_MODE_MONITOR_NODE_NAME", "bartender_mode_monitor") or "").strip()
+    or "bartender_mode_monitor"
+)
 
 
 def _parse_fixed_abc_env(raw: str):
@@ -150,7 +318,7 @@ def get_robot_state_name(state_code: int) -> str:
 
 class RobotControllerNode(Node):
     def __init__(self, use_real_gripper=False):
-        super().__init__("bartender_backend")
+        super().__init__(BACKEND_NODE_NAME)
         self.use_real_gripper = use_real_gripper
         self._gripper_lock = threading.Lock()
 
@@ -178,13 +346,17 @@ class RobotControllerNode(Node):
         self.get_logger().error(msg)
         print(f"[오류] {msg}")
 
-    def terminate_gripper(self):
+    def terminate_gripper(self, best_effort: bool = False):
         if not self.use_real_gripper:
             return
         with self._gripper_lock:
             gripper = self.gripper
         if gripper is not None:
-            gripper.terminate()
+            try:
+                gripper.terminate(best_effort=bool(best_effort))
+            except TypeError:
+                # Backward compatibility for older GripperController implementations.
+                gripper.terminate()
 
     def ensure_gripper_connected(self):
         if not self.use_real_gripper:
@@ -341,6 +513,44 @@ class RobotControllerNode(Node):
             self.get_logger().error(f"조인트 이동 중 오류 발생: {e}")
             return False
 
+    def move_to_cartesian_pose_async(self, x, y, z, a, b, c, vel=None, acc=None):
+        from DSR_ROBOT2 import amovel
+        from DR_common2 import posx
+        try:
+            target = [float(x), float(y), float(z), float(a), float(b), float(c)]
+            velx, accx = self._cart_motion_profile(vel=vel, acc=acc)
+            self.get_logger().info(
+                f"카테시안 비동기 이동: XYZABC=[{target[0]:.3f}, {target[1]:.3f}, {target[2]:.3f}, "
+                f"{target[3]:.3f}, {target[4]:.3f}, {target[5]:.3f}], "
+                f"vel=[{velx[0]:.3f}, {velx[1]:.3f}], acc=[{accx[0]:.3f}, {accx[1]:.3f}]"
+            )
+            ret = amovel(posx(target), vel=velx, acc=accx, radius=0.0, ra=DR_MV_RA_DUPLICATE)
+            if not self._motion_ok(ret, "amovel(카테시안 비동기 이동)"):
+                return False
+            return True
+        except Exception as e:
+            self.get_logger().error(f"카테시안 비동기 이동 중 오류 발생: {e}")
+            return False
+
+    def move_to_joint_pose_async(self, j1, j2, j3, j4, j5, j6, vel=None, acc=None):
+        from DSR_ROBOT2 import amovej
+        from DR_common2 import posj
+        try:
+            target = [float(j1), float(j2), float(j3), float(j4), float(j5), float(j6)]
+            self.get_logger().info(
+                f"조인트 비동기 이동: J=[{target[0]:.3f}, {target[1]:.3f}, {target[2]:.3f}, "
+                f"{target[3]:.3f}, {target[4]:.3f}, {target[5]:.3f}]"
+            )
+            v = VELOCITY if vel is None else float(vel)
+            a = ACC if acc is None else float(acc)
+            ret = amovej(posj(*target), vel=v, acc=a, radius=0.0, ra=DR_MV_RA_DUPLICATE)
+            if not self._motion_ok(ret, "amovej(조인트 비동기 이동)"):
+                return False
+            return True
+        except Exception as e:
+            self.get_logger().error(f"조인트 비동기 이동 중 오류 발생: {e}")
+            return False
+
     def pick_move_robot_and_control_gripper(self, x, y, z, width, depth, abc=None):
         from DSR_ROBOT2 import movel, wait
         from DR_common2 import posx
@@ -430,6 +640,681 @@ class RobotControllerNode(Node):
             return False
 
 
+class NativeRobotActionApi:
+    """Planner API 구현체(네이티브 실행).
+
+    - planner가 호출하는 movel/movej/move_to_detection 등을 즉시 실행한다.
+    - 실행시 DSR 원본 API(movel/movej + posx/posj)를 사용한다.
+    """
+
+    def __init__(self, backend, offset_map, execute_enabled: bool, move_speed):
+        self.backend = backend
+        self.robot_controller = backend.robot_controller
+        self.offset_map = dict(offset_map or {})
+        self.execute_enabled = bool(execute_enabled)
+        self.move_speed = move_speed
+        self.sequence_steps = []
+        self._step_logs = []
+        self._resolved_targets = {}
+
+    def _append_step(self, step: dict):
+        self.sequence_steps.append(dict(step))
+
+    def _append_log(self, text: str):
+        msg = str(text or "").strip()
+        if msg:
+            self._step_logs.append(msg)
+            try:
+                # 메인 로그창에서 로봇동작 중간단계/목표값을 바로 확인할 수 있게 출력
+                if self.robot_controller is not None:
+                    self.robot_controller._log_info(f"[로봇동작] {msg}")
+                else:
+                    print(f"[로봇동작] {msg}")
+            except Exception:
+                pass
+
+    @staticmethod
+    def _is_resolved_target_pose(pose):
+        return isinstance(pose, dict) and ("__resolved_target_key__" in pose)
+
+    def summary_tail(self, tail_count: int = 6):
+        if not self._step_logs:
+            return "시퀀스 실행 완료"
+        return " / ".join(self._step_logs[-max(1, int(tail_count)):])
+
+    def _check_motion(self, label: str, max_state_age_sec: float = 2.0):
+        ok_state, state_msg = self.backend._check_motion_precondition(max_state_age_sec=max_state_age_sec)
+        if not ok_state:
+            raise RuntimeError(f"{label} 중단: {state_msg}")
+
+    def _cart_profile(self, vel=None, acc=None):
+        if self.robot_controller is None:
+            raise RuntimeError("로봇 컨트롤러가 없습니다.")
+        eff_vel = self.move_speed if vel is None else float(vel)
+        eff_acc = self.move_speed if acc is None else float(acc)
+        return self.robot_controller._cart_motion_profile(vel=eff_vel, acc=eff_acc)
+
+    def _exec_movel_native(self, target6, label: str, vel=None, acc=None):
+        from DSR_ROBOT2 import movel, wait
+        from DR_common2 import posx
+
+        target = [float(v) for v in list(target6)[:6]]
+        if len(target) != 6:
+            raise RuntimeError(f"{label} 실패: XYZABC 길이가 올바르지 않습니다.")
+        self._check_motion(label, max_state_age_sec=2.0)
+        velx, accx = self._cart_profile(vel=vel, acc=acc)
+        ret = movel(posx(target), vel=velx, acc=accx, radius=0.0, ra=DR_MV_RA_DUPLICATE)
+        if self.robot_controller is not None and (not self.robot_controller._motion_ok(ret, f"movel({label})")):
+            raise RuntimeError(f"{label} 실패: movel 반환값={ret}")
+        wait(0.5)
+
+    def _exec_movej_native(self, joints6, label: str, vel=None, acc=None):
+        from DSR_ROBOT2 import movej, wait
+        from DR_common2 import posj
+
+        joints = [float(v) for v in list(joints6)[:6]]
+        if len(joints) != 6:
+            raise RuntimeError(f"{label} 실패: J1~J6 길이가 올바르지 않습니다.")
+        self._check_motion(label, max_state_age_sec=2.0)
+        eff_vel = VELOCITY if vel is None else float(vel)
+        eff_acc = ACC if acc is None else float(acc)
+        ret = movej(posj(*joints), eff_vel, eff_acc)
+        if self.robot_controller is not None and (not self.robot_controller._motion_ok(ret, f"movej({label})")):
+            raise RuntimeError(f"{label} 실패: movej 반환값={ret}")
+        wait(0.5)
+
+    def _exec_amovel_native(self, target6, label: str, vel=None, acc=None):
+        from DSR_ROBOT2 import amovel
+        from DR_common2 import posx
+
+        target = [float(v) for v in list(target6)[:6]]
+        if len(target) != 6:
+            raise RuntimeError(f"{label} 실패: XYZABC 길이가 올바르지 않습니다.")
+        self._check_motion(label, max_state_age_sec=2.0)
+        velx, accx = self._cart_profile(vel=vel, acc=acc)
+        ret = amovel(posx(target), vel=velx, acc=accx, radius=0.0, ra=DR_MV_RA_DUPLICATE)
+        if self.robot_controller is not None and (not self.robot_controller._motion_ok(ret, f"amovel({label})")):
+            raise RuntimeError(f"{label} 실패: amovel 반환값={ret}")
+
+    def _exec_amovej_native(self, joints6, label: str, vel=None, acc=None):
+        from DSR_ROBOT2 import amovej
+        from DR_common2 import posj
+
+        joints = [float(v) for v in list(joints6)[:6]]
+        if len(joints) != 6:
+            raise RuntimeError(f"{label} 실패: J1~J6 길이가 올바르지 않습니다.")
+        self._check_motion(label, max_state_age_sec=2.0)
+        eff_vel = VELOCITY if vel is None else float(vel)
+        eff_acc = ACC if acc is None else float(acc)
+        ret = amovej(posj(*joints), vel=eff_vel, acc=eff_acc, radius=0.0, ra=DR_MV_RA_DUPLICATE)
+        if self.robot_controller is not None and (not self.robot_controller._motion_ok(ret, f"amovej({label})")):
+            raise RuntimeError(f"{label} 실패: amovej 반환값={ret}")
+
+    def _resolve_detection_xyz(
+        self,
+        *,
+        ingredient_code: str,
+        center_uv,
+        depth_m: float,
+        apply_menu_offset: bool,
+        extra_offset_xyz_mm,
+        debug_label: str | None = None,
+    ):
+        u = float(center_uv[0])
+        v = float(center_uv[1])
+        z_mm = float(depth_m) * 1000.0
+        if (not math.isfinite(z_mm)) or z_mm <= 0.0:
+            raise RuntimeError(f"depth 값 오류({depth_m})")
+
+        robot_xyz, xyz_msg = self.backend._vision1_uvz_to_robot_xyz_mm(u, v, z_mm)
+        if robot_xyz is None:
+            raise RuntimeError(str(xyz_msg or "UVZ->XYZ 변환 실패"))
+        tx, ty, tz = [float(vv) for vv in robot_xyz[:3]]
+        base_x, base_y, base_z = tx, ty, tz
+        menu_ox, menu_oy, menu_oz = 0.0, 0.0, 0.0
+
+        if bool(apply_menu_offset):
+            menu_ox, menu_oy, menu_oz = self.backend._get_menu_xyz_offset(ingredient_code, self.offset_map)
+            tx += float(menu_ox)
+            ty += float(menu_oy)
+            tz += float(menu_oz)
+
+        extra_offset = extra_offset_xyz_mm if isinstance(extra_offset_xyz_mm, (list, tuple)) else [0.0, 0.0, 0.0]
+        ex = float(extra_offset[0]) if len(extra_offset) >= 1 else 0.0
+        ey = float(extra_offset[1]) if len(extra_offset) >= 2 else 0.0
+        ez = float(extra_offset[2]) if len(extra_offset) >= 3 else 0.0
+        tx += ex
+        ty += ey
+        tz += ez
+        if debug_label:
+            self._append_log(
+                f"{debug_label} 계산: base=({base_x:.1f},{base_y:.1f},{base_z:.1f}) + "
+                f"menu_offset=({float(menu_ox):.1f},{float(menu_oy):.1f},{float(menu_oz):.1f}) + "
+                f"extra_offset=({ex:.1f},{ey:.1f},{ez:.1f}) => final=({tx:.1f},{ty:.1f},{tz:.1f}), "
+                f"UV=({u:.1f},{v:.1f}), depth={z_mm:.1f}mm, ingredient={str(ingredient_code or '').strip().lower() or '-'}"
+            )
+        return tx, ty, tz
+
+    def set_robot_mode(self, mode: int, label: str = "로봇 오토모드 전환", enabled: bool = True):
+        self._append_step(
+            {
+                "op": "set_robot_mode",
+                "label": str(label),
+                "mode": int(mode),
+                "enabled": bool(enabled),
+            }
+        )
+        if not bool(enabled):
+            self._append_log(f"{label}(비활성)")
+            return
+        if not self.execute_enabled:
+            self._append_log(f"{label}(계획 mode={int(mode)})")
+            return
+        # 이미 목표 모드면 불필요한 set 호출을 생략한다.
+        try:
+            if int(mode) == 1 and hasattr(self.backend, "sync_robot_mode_once"):
+                self.backend.sync_robot_mode_once(force=False, timeout_sec=0.8)
+            if hasattr(self.backend, "get_robot_mode_snapshot"):
+                cur_mode, _seen_at = self.backend.get_robot_mode_snapshot()
+                if cur_mode is not None and int(cur_mode) == int(mode):
+                    self._append_log(f"{label}(mode={int(mode)} 이미 적용, skip)")
+                    return
+        except Exception:
+            pass
+        # NativeRobotActionApi는 run_bartender_first_ingredient_action() 내부 busy 구간에서 실행된다.
+        # 여기서 public set_robot_mode()를 호출하면 busy 가드에 걸리므로, 내부 서비스 호출 함수로 우회한다.
+        ok_mode, mode_msg = self.backend._call_with_retry(
+            lambda: self.backend._call_set_robot_mode(int(mode), timeout_sec=6.0),
+            timeout_sec=8.0,
+            poll_sec=0.2,
+        )
+        if not ok_mode:
+            raise RuntimeError(f"{label} 실패: {mode_msg}")
+        self._append_log(f"{label}(mode={int(mode)})")
+
+    def move_home(self, label: str = "홈 이동", enabled: bool = True):
+        self._append_step(
+            {
+                "op": "backend_call",
+                "label": str(label),
+                "method": "send_move_home",
+                "args": [],
+                "kwargs": {},
+                "enabled": bool(enabled),
+            }
+        )
+        if not bool(enabled):
+            self._append_log(f"{label}(비활성)")
+            return
+        if not self.execute_enabled:
+            self._append_log(f"{label}(계획)")
+            return
+        home_j = self.backend.get_home_posj()
+        self._exec_movej_native(home_j, label=label)
+        self._append_log(label)
+
+    def movel_posx(self, pose6, label: str = "카테시안 이동", enabled: bool = True, timeout_sec: float | None = None, vel: float | None = None, acc: float | None = None):
+        if self._is_resolved_target_pose(pose6):
+            payload = dict(pose6)
+            self.movel_resolved_target(
+                target_key=str(payload.get("__resolved_target_key__", "")),
+                label=str(label),
+                approach_up_mm=float(payload.get("approach_up_mm", 0.0)),
+                xyzabc=payload.get("xyzabc"),
+                offset_xyz_mm=payload.get("offset_xyz_mm"),
+                abc=payload.get("abc"),
+                enabled=bool(enabled),
+                timeout_sec=timeout_sec,
+                vel=vel,
+                acc=acc,
+            )
+            return
+
+        vals = [float(v) for v in list(pose6)[:6]]
+        kwargs = {}
+        if vel is not None:
+            kwargs["vel"] = float(vel)
+        if acc is not None:
+            kwargs["acc"] = float(acc)
+        step = {
+            "op": "backend_call",
+            "label": str(label),
+            "method": "send_move_cartesian",
+            "args": vals,
+            "kwargs": kwargs,
+            "enabled": bool(enabled),
+        }
+        if timeout_sec is not None:
+            step["timeout_sec"] = float(timeout_sec)
+        self._append_step(step)
+        if not bool(enabled):
+            self._append_log(f"{label}(비활성)")
+            return
+        if not self.execute_enabled:
+            self._append_log(f"{label}(계획)")
+            return
+        self._exec_movel_native(vals, label=label, vel=vel, acc=acc)
+        self._append_log(f"{label}(XYZ={vals[0]:.1f},{vals[1]:.1f},{vals[2]:.1f})")
+
+    def movej_posj(self, joints6, label: str = "조인트 이동", enabled: bool = True, timeout_sec: float | None = None, vel: float | None = None, acc: float | None = None):
+        vals = [float(v) for v in list(joints6)[:6]]
+        if len(vals) != 6:
+            raise RuntimeError("movej_posj는 6개 조인트 값이 필요합니다.")
+        kwargs = {}
+        if vel is not None:
+            kwargs["vel"] = float(vel)
+        if acc is not None:
+            kwargs["acc"] = float(acc)
+        step = {
+            "op": "backend_call",
+            "label": str(label),
+            "method": "send_move_joint",
+            "args": vals,
+            "kwargs": kwargs,
+            "enabled": bool(enabled),
+        }
+        if timeout_sec is not None:
+            step["timeout_sec"] = float(timeout_sec)
+        self._append_step(step)
+        if not bool(enabled):
+            self._append_log(f"{label}(비활성)")
+            return
+        if not self.execute_enabled:
+            self._append_log(f"{label}(계획)")
+            return
+        self._exec_movej_native(vals, label=label, vel=vel, acc=acc)
+        self._append_log(f"{label}(J={','.join(f'{v:.1f}' for v in vals)})")
+
+    def amovel_posx(self, pose6, label: str = "카테시안 비동기 이동", enabled: bool = True, timeout_sec: float | None = None, vel: float | None = None, acc: float | None = None):
+        vals = [float(v) for v in list(pose6)[:6]]
+        if len(vals) != 6:
+            raise RuntimeError("amovel_posx는 6개 XYZABC 값이 필요합니다.")
+        kwargs = {}
+        if vel is not None:
+            kwargs["vel"] = float(vel)
+        if acc is not None:
+            kwargs["acc"] = float(acc)
+        step = {
+            "op": "backend_call",
+            "label": str(label),
+            "method": "send_move_cartesian_async",
+            "args": vals,
+            "kwargs": kwargs,
+            "enabled": bool(enabled),
+        }
+        if timeout_sec is not None:
+            step["timeout_sec"] = float(timeout_sec)
+        self._append_step(step)
+        if not bool(enabled):
+            self._append_log(f"{label}(비활성)")
+            return
+        if not self.execute_enabled:
+            self._append_log(f"{label}(계획)")
+            return
+        self._exec_amovel_native(vals, label=label, vel=vel, acc=acc)
+        self._append_log(f"{label}(XYZ={vals[0]:.1f},{vals[1]:.1f},{vals[2]:.1f})")
+
+    def amovej_posj(self, joints6, label: str = "조인트 비동기 이동", enabled: bool = True, timeout_sec: float | None = None, vel: float | None = None, acc: float | None = None):
+        vals = [float(v) for v in list(joints6)[:6]]
+        if len(vals) != 6:
+            raise RuntimeError("amovej_posj는 6개 조인트 값이 필요합니다.")
+        kwargs = {}
+        if vel is not None:
+            kwargs["vel"] = float(vel)
+        if acc is not None:
+            kwargs["acc"] = float(acc)
+        step = {
+            "op": "backend_call",
+            "label": str(label),
+            "method": "send_move_joint_async",
+            "args": vals,
+            "kwargs": kwargs,
+            "enabled": bool(enabled),
+        }
+        if timeout_sec is not None:
+            step["timeout_sec"] = float(timeout_sec)
+        self._append_step(step)
+        if not bool(enabled):
+            self._append_log(f"{label}(비활성)")
+            return
+        if not self.execute_enabled:
+            self._append_log(f"{label}(계획)")
+            return
+        self._exec_amovej_native(vals, label=label, vel=vel, acc=acc)
+        self._append_log(f"{label}(J={','.join(f'{v:.1f}' for v in vals)})")
+
+    # backward compatibility aliases
+    def movel(self, pose6, label: str = "카테시안 이동", enabled: bool = True, timeout_sec: float | None = None, vel: float | None = None, acc: float | None = None):
+        self.movel_posx(pose6=pose6, label=label, enabled=enabled, timeout_sec=timeout_sec, vel=vel, acc=acc)
+
+    def movej(self, joints6, label: str = "조인트 이동", enabled: bool = True, timeout_sec: float | None = None, vel: float | None = None, acc: float | None = None):
+        self.movej_posj(joints6=joints6, label=label, enabled=enabled, timeout_sec=timeout_sec, vel=vel, acc=acc)
+
+    def amovel(self, pose6, label: str = "카테시안 비동기 이동", enabled: bool = True, timeout_sec: float | None = None, vel: float | None = None, acc: float | None = None):
+        self.amovel_posx(pose6=pose6, label=label, enabled=enabled, timeout_sec=timeout_sec, vel=vel, acc=acc)
+
+    def amovej(self, joints6, label: str = "조인트 비동기 이동", enabled: bool = True, timeout_sec: float | None = None, vel: float | None = None, acc: float | None = None):
+        self.amovej_posj(joints6=joints6, label=label, enabled=enabled, timeout_sec=timeout_sec, vel=vel, acc=acc)
+
+    def gripper(self, distance_mm: float, label: str = "그리퍼 이동", enabled: bool = True):
+        self._append_step(
+            {
+                "op": "backend_call",
+                "label": str(label),
+                "method": "send_gripper_move",
+                "args": [float(distance_mm)],
+                "kwargs": {},
+                "enabled": bool(enabled),
+            }
+        )
+        if not bool(enabled):
+            self._append_log(f"{label}(비활성)")
+            return
+        if not self.execute_enabled:
+            self._append_log(f"{label}(계획 {float(distance_mm):.1f}mm)")
+            return
+        gripper_ok, gripper_msg = self.backend._check_gripper_precondition()
+        if not gripper_ok:
+            raise RuntimeError(f"{label} 실패: {gripper_msg}")
+        ok_gripper = self.robot_controller.move_gripper_manual(float(distance_mm))
+        if not ok_gripper:
+            raise RuntimeError(f"{label} 실패: distance={float(distance_mm):.1f}mm")
+        self._append_log(f"{label}({float(distance_mm):.1f}mm)")
+
+    def wait_sec(self, seconds: float, label: str = "대기", enabled: bool = True):
+        wait_s = max(0.0, float(seconds))
+        self._append_step(
+            {
+                "op": "wait_sec",
+                "label": str(label),
+                "seconds": float(wait_s),
+                "enabled": bool(enabled),
+            }
+        )
+        if not bool(enabled):
+            self._append_log(f"{label}(비활성)")
+            return
+        if not self.execute_enabled:
+            self._append_log(f"{label}(계획 {wait_s:.2f}s)")
+            return
+        end_t = time.monotonic() + float(wait_s)
+        while time.monotonic() < end_t:
+            self._check_motion(label, max_state_age_sec=2.0)
+            time.sleep(min(0.05, max(0.0, end_t - time.monotonic())))
+        self._append_log(f"{label}({wait_s:.2f}s)")
+
+    def motion_stop(self, label: str = "모션 정지", stop_mode: int = 2, enabled: bool = True):
+        mode = int(stop_mode)
+        self._append_step(
+            {
+                "op": "backend_call",
+                "label": str(label),
+                "method": "send_motion_stop",
+                "args": [mode],
+                "kwargs": {},
+                "enabled": bool(enabled),
+            }
+        )
+        if not bool(enabled):
+            self._append_log(f"{label}(비활성)")
+            return
+        if not self.execute_enabled:
+            self._append_log(f"{label}(계획 stop_mode={mode})")
+            return
+        ok_stop, stop_msg = self.backend.send_motion_stop(stop_mode=mode)
+        if not ok_stop:
+            raise RuntimeError(f"{label} 실패: {stop_msg}")
+        self._append_log(f"{label}(stop_mode={mode})")
+
+    def emergency_stop(self, label: str = "정지", enabled: bool = True):
+        # backward compatibility alias: 기존 emergency_stop 호출을 모션 정지로 연결
+        self.motion_stop(label=label, stop_mode=2, enabled=enabled)
+
+    def resolve_detection_target(
+        self,
+        *,
+        target_key: str,
+        ingredient_code: str,
+        center_uv,
+        depth_m: float,
+        label: str = "비전 타겟 계산",
+        extra_offset_xyz_mm=None,
+        apply_menu_offset: bool = True,
+        enabled: bool = True,
+    ):
+        key = str(target_key or "").strip()
+        if not key:
+            raise RuntimeError("target_key가 비어 있습니다.")
+        self._append_step(
+            {
+                "op": "resolve_detection_target",
+                "label": str(label),
+                "target_key": key,
+                "ingredient_code": str(ingredient_code),
+                "target_uv": [float(center_uv[0]), float(center_uv[1])],
+                "target_depth_m": float(depth_m),
+                "apply_menu_offset": bool(apply_menu_offset),
+                "extra_offset_xyz_mm": list(extra_offset_xyz_mm or [0.0, 0.0, 0.0]),
+                "enabled": bool(enabled),
+            }
+        )
+        if not bool(enabled):
+            self._append_log(f"{label}(비활성)")
+            return
+        tx, ty, tz = self._resolve_detection_xyz(
+            ingredient_code=str(ingredient_code),
+            center_uv=center_uv,
+            depth_m=float(depth_m),
+            apply_menu_offset=bool(apply_menu_offset),
+            extra_offset_xyz_mm=extra_offset_xyz_mm,
+            debug_label=str(label or "비전 타겟 계산"),
+        )
+        self._resolved_targets[key] = (tx, ty, tz)
+        self._append_log(f"{label}(XYZ={tx:.1f},{ty:.1f},{tz:.1f})")
+
+    def get_resolved_target_pose(self, *, target_key: str, approach_up_mm: float = 0.0, xyzabc=None, offset_xyz_mm=None, abc=None):
+        payload = {
+            "__resolved_target_key__": str(target_key),
+            "approach_up_mm": float(approach_up_mm),
+        }
+        if xyzabc is not None:
+            payload["xyzabc"] = list(xyzabc)
+        if offset_xyz_mm is not None:
+            payload["offset_xyz_mm"] = list(offset_xyz_mm)
+        if abc is not None:
+            payload["abc"] = list(abc)
+        return payload
+
+    def add_pose_offset_xyz(self, pose_payload, *, dx_mm: float = 0.0, dy_mm: float = 0.0, dz_mm: float = 0.0):
+        if not isinstance(pose_payload, dict):
+            raise RuntimeError("pose_payload는 get_resolved_target_pose() 반환 dict여야 합니다.")
+        base = pose_payload.get("offset_xyz_mm", [0.0, 0.0, 0.0])
+        try:
+            bx = float(base[0]) if isinstance(base, (list, tuple)) and len(base) >= 1 else 0.0
+            by = float(base[1]) if isinstance(base, (list, tuple)) and len(base) >= 2 else 0.0
+            bz = float(base[2]) if isinstance(base, (list, tuple)) and len(base) >= 3 else 0.0
+        except Exception:
+            bx, by, bz = 0.0, 0.0, 0.0
+        pose_payload["offset_xyz_mm"] = [
+            float(bx) + float(dx_mm),
+            float(by) + float(dy_mm),
+            float(bz) + float(dz_mm),
+        ]
+        return pose_payload
+
+    def movel_resolved_target(
+        self,
+        *,
+        target_key: str,
+        label: str = "비전 타겟 이동",
+        approach_up_mm: float = 0.0,
+        xyzabc=None,
+        offset_xyz_mm=None,
+        abc=None,
+        enabled: bool = True,
+        timeout_sec: float | None = None,
+        vel: float | None = None,
+        acc: float | None = None,
+    ):
+        key = str(target_key or "").strip()
+        if not key:
+            raise RuntimeError("target_key가 비어 있습니다.")
+        step = {
+            "op": "movel_resolved_target",
+            "label": str(label),
+            "target_key": key,
+            "approach_up_mm": float(approach_up_mm),
+            "enabled": bool(enabled),
+        }
+        if xyzabc is not None:
+            step["xyzabc"] = list(xyzabc)
+        if offset_xyz_mm is not None:
+            step["offset_xyz_mm"] = list(offset_xyz_mm)
+        if abc is not None:
+            step["abc"] = list(abc)
+        if timeout_sec is not None:
+            step["timeout_sec"] = float(timeout_sec)
+        if vel is not None:
+            step["vel"] = float(vel)
+        if acc is not None:
+            step["acc"] = float(acc)
+        self._append_step(step)
+        if not bool(enabled):
+            self._append_log(f"{label}(비활성)")
+            return
+
+        if key not in self._resolved_targets:
+            raise RuntimeError(f"{label} 실패: target_key={key} 미해결")
+        tx, ty, tz = self._resolved_targets[key]
+        xyzabc_vals = xyzabc if isinstance(xyzabc, (list, tuple)) else None
+        if xyzabc_vals is not None and len(xyzabc_vals) >= 3:
+            try:
+                tx += float(xyzabc_vals[0])
+                ty += float(xyzabc_vals[1])
+                tz += float(xyzabc_vals[2])
+            except Exception:
+                pass
+        offset = offset_xyz_mm if isinstance(offset_xyz_mm, (list, tuple)) else [0.0, 0.0, 0.0]
+        try:
+            tx += float(offset[0]) if len(offset) >= 1 else 0.0
+            ty += float(offset[1]) if len(offset) >= 2 else 0.0
+            tz += float(offset[2]) if len(offset) >= 3 else 0.0
+        except Exception:
+            pass
+        if xyzabc_vals is not None and len(xyzabc_vals) >= 6:
+            try:
+                a, b, c = float(xyzabc_vals[3]), float(xyzabc_vals[4]), float(xyzabc_vals[5])
+            except Exception:
+                (a, b, c), _abc_source = self.backend._resolve_robot_action_abc()
+        elif isinstance(abc, (list, tuple)) and len(abc) >= 3:
+            a, b, c = float(abc[0]), float(abc[1]), float(abc[2])
+        else:
+            (a, b, c), _abc_source = self.backend._resolve_robot_action_abc()
+        up_mm = max(0.0, float(approach_up_mm))
+        if not self.execute_enabled:
+            self._append_log(f"{label}(계획 XYZ={tx:.1f},{ty:.1f},{tz:.1f})")
+            return
+        if up_mm > 0.0:
+            self._exec_movel_native([tx, ty, tz + up_mm, a, b, c], label=f"{label} 접근", vel=vel, acc=acc)
+        self._exec_movel_native([tx, ty, tz, a, b, c], label=label, vel=vel, acc=acc)
+        self._append_log(f"{label}(XYZ={tx:.1f},{ty:.1f},{tz:.1f})")
+
+    def move_to_detection(
+        self,
+        *,
+        ingredient_code: str,
+        center_uv,
+        depth_m: float,
+        label: str,
+        extra_offset_xyz_mm=None,
+        approach_up_mm: float = 40.0,
+        apply_menu_offset: bool = True,
+        enabled: bool = True,
+    ):
+        key = f"legacy_{str(label)}_{str(ingredient_code)}"
+        self.resolve_detection_target(
+            target_key=key,
+            ingredient_code=ingredient_code,
+            center_uv=center_uv,
+            depth_m=depth_m,
+            label=f"{label} (타겟계산)",
+            extra_offset_xyz_mm=extra_offset_xyz_mm,
+            apply_menu_offset=apply_menu_offset,
+            enabled=enabled,
+        )
+        pose = self.get_resolved_target_pose(target_key=key, approach_up_mm=approach_up_mm)
+        self.movel_posx(pose, label=label, enabled=enabled)
+
+    def wait_volume_target(
+        self,
+        target_volume_ml: float,
+        label: str,
+        timeout_sec: float = 20.0,
+        poll_sec: float = 0.1,
+        condition: str = "gte",
+        compare_tolerance_ml: float = 0.5,
+        enabled: bool = True,
+    ):
+        cond, target = _resolve_volume_condition_target(condition, target_volume_ml)
+        tol = max(0.0, float(compare_tolerance_ml))
+        cond_text = _format_volume_condition(cond, target)
+        self._append_step(
+            {
+                "op": "wait_volume_target",
+                "label": str(label),
+                "target_volume_ml": float(target),
+                "timeout_sec": float(timeout_sec),
+                "poll_sec": float(poll_sec),
+                "condition": cond,
+                "condition_text": cond_text,
+                "compare_tolerance_ml": tol,
+                "enabled": bool(enabled),
+            }
+        )
+        if not bool(enabled):
+            self._append_log(f"{label}(비활성)")
+            return
+        if not self.execute_enabled:
+            self._append_log(f"{label}(계획 {cond_text})")
+            return
+
+        timeout_s = max(0.5, float(timeout_sec))
+        poll_s = max(0.05, float(poll_sec))
+        start_at = time.monotonic()
+        last_volume = None
+        while (time.monotonic() - start_at) <= timeout_s:
+            payload, seen_at = self.backend.get_vision2_meta_snapshot()
+            if payload is None or seen_at is None:
+                time.sleep(poll_s)
+                continue
+            age = time.monotonic() - float(seen_at)
+            if age > float(VISION2_META_STALE_SEC):
+                time.sleep(poll_s)
+                continue
+            volume_ml = self.backend._extract_vision2_volume_ml(payload)
+            if volume_ml is None:
+                time.sleep(poll_s)
+                continue
+            last_volume = float(volume_ml)
+            if _is_volume_condition_met(last_volume, target, condition=cond, tolerance_ml=tol):
+                self._append_log(
+                    f"{label}(volume={last_volume:.1f}ml, condition={cond_text})"
+                )
+                return
+            time.sleep(poll_s)
+        if last_volume is None:
+            raise RuntimeError(f"{label} 실패: vision2 용량값을 읽지 못했습니다.")
+        raise RuntimeError(
+            f"{label} 실패: 용량 조건 미충족(current={last_volume:.1f}ml, condition={cond_text})"
+        )
+
+    def get_current_volume_ml(self, *, max_age_sec: float | None = None) -> float:
+        volume_ml, msg = self.backend.get_current_volume_ml(max_age_sec=max_age_sec)
+        if volume_ml is None:
+            raise RuntimeError(f"vision2 현재용량 조회 실패: {msg}")
+        return float(volume_ml)
+
+
 class RobotBackend:
     def __init__(self, use_real_gripper=False):
         self.use_real_gripper = use_real_gripper
@@ -473,6 +1358,10 @@ class RobotBackend:
         self._last_mode_source_scan_at = 0.0
         self._mode_source_scan_interval_sec = 1.0
         self._set_robot_control_clients = {}
+        self._servo_off_clients = {}
+        self._move_stop_clients = {}
+        self._move_stop_service_lock = threading.Lock()
+        self._move_stop_preferred_srv = None
         self._set_robot_mode_clients = {}
         self._get_robot_mode_clients = {}
         self._robot_mode_service_lock = threading.Lock()
@@ -498,6 +1387,26 @@ class RobotBackend:
         self._fixed_pick_place_abc = list(DEFAULT_PICK_PLACE_ABC) if DEFAULT_PICK_PLACE_ABC is not None else None
         self._home_posj_lock = threading.Lock()
         self._home_posj = tuple(float(v) for v in list(HOME_POSJ)[:6])
+        self._voice_order_lock = threading.Lock()
+        self._voice_order_last_payload = None
+        self._voice_order_last_seen_at = None
+        self._bartender_sequence_manager = BartenderSequenceManager(self)
+        self._bartender_sequence_api_server = None
+        self._vision1_meta_lock = threading.Lock()
+        self._vision1_meta_payload = None
+        self._vision1_meta_seen_at = None
+        self._vision1_meta_sub = None
+        self._vision2_meta_lock = threading.Lock()
+        self._vision2_meta_payload = None
+        self._vision2_meta_seen_at = None
+        self._vision2_meta_sub = None
+        self._vision1_intrinsics_lock = threading.Lock()
+        self._vision1_intrinsics = None  # (fx, fy, cx, cy)
+        self._vision1_camera_info_sub = None
+        self._vision1_camera_info_topic_in_use = None
+        self._vision1_affine_lock = threading.Lock()
+        self._vision1_affine_3x4 = None
+        self._vision1_affine_path = None
         self._load_home_posj_from_file()
 
     def _parse_home_row(self, row):
@@ -630,9 +1539,9 @@ class RobotBackend:
         rclpy.init(args=None)
 
         self._report_progress(progress_callback, 15, "DSR 노드 생성 중...")
-        self._dsr_node = rclpy.create_node("bartender_robot_app", namespace=ROBOT_ID)
+        self._dsr_node = rclpy.create_node(DSR_BRIDGE_NODE_NAME, namespace=ROBOT_ID)
         # 모드 set/get 서비스 전용 노드(무브 API와 분리)
-        self._mode_node = rclpy.create_node("bartender_robot_mode", namespace=ROBOT_ID)
+        self._mode_node = rclpy.create_node(MODE_MONITOR_NODE_NAME, namespace=ROBOT_ID)
         # Avoid class-scope name-mangling on double-underscore attributes.
         setattr(DR_init, "__dsr__node", self._dsr_node)
 
@@ -660,6 +1569,7 @@ class RobotBackend:
         self._detect_connection_mode_once(progress_callback=progress_callback)
         self._setup_position_source(progress_callback, wait_timeout_sec=0.15)
         self._setup_robot_mode_source(progress_callback)
+        self._setup_bartender_action_sources(progress_callback=progress_callback)
         self._report_gripper_startup_plan(progress_callback=progress_callback)
         self._report_progress(progress_callback, 99, "명령 워커 시작 중...")
 
@@ -668,6 +1578,7 @@ class RobotBackend:
 
         self._ready_event.set()
         self._started = True
+        self._start_bartender_sequence_api_server(progress_callback=progress_callback)
         self._report_progress(progress_callback, 100, "초기화 완료")
 
     def _spin_bg(self):
@@ -937,17 +1848,15 @@ class RobotBackend:
                         self.robot_controller._log_error("비전 좌표 이동 실패")
                         continue
                     time.sleep(max(0.0, float(dwell_sec)))
-                    ok_home = self.robot_controller.move_to_home_pose(home_posj=self.get_home_posj())
-                    if not ok_home:
-                        self.robot_controller._log_error("비전 이동 후 홈 복귀 실패")
                 finally:
                     self._busy_event.clear()
-            elif cmd == "move_cartesian":
+            elif cmd in ("move_cartesian", "move_cartesian_async"):
                 if self._busy_event.is_set():
                     continue
 
                 self._busy_event.set()
                 try:
+                    is_async = (cmd == "move_cartesian_async")
                     vel = None
                     acc = None
                     if isinstance(val, (list, tuple)) and len(val) >= 8:
@@ -958,17 +1867,21 @@ class RobotBackend:
                     if not state_ok:
                         self.robot_controller._log_error(f"카테시안 이동 중단: {state_msg}")
                         continue
-                    ok_move = self.robot_controller.move_to_cartesian_pose(x, y, z, a, b, c, vel=vel, acc=acc)
+                    if is_async:
+                        ok_move = self.robot_controller.move_to_cartesian_pose_async(x, y, z, a, b, c, vel=vel, acc=acc)
+                    else:
+                        ok_move = self.robot_controller.move_to_cartesian_pose(x, y, z, a, b, c, vel=vel, acc=acc)
                     if not ok_move:
-                        self.robot_controller._log_error("카테시안 이동 실패")
+                        self.robot_controller._log_error("카테시안 비동기 이동 실패" if is_async else "카테시안 이동 실패")
                 finally:
                     self._busy_event.clear()
-            elif cmd == "move_joint":
+            elif cmd in ("move_joint", "move_joint_async"):
                 if self._busy_event.is_set():
                     continue
 
                 self._busy_event.set()
                 try:
+                    is_async = (cmd == "move_joint_async")
                     vel = None
                     acc = None
                     if isinstance(val, (list, tuple)) and len(val) >= 8:
@@ -979,9 +1892,12 @@ class RobotBackend:
                     if not state_ok:
                         self.robot_controller._log_error(f"조인트 이동 중단: {state_msg}")
                         continue
-                    ok_move = self.robot_controller.move_to_joint_pose(j1, j2, j3, j4, j5, j6, vel=vel, acc=acc)
+                    if is_async:
+                        ok_move = self.robot_controller.move_to_joint_pose_async(j1, j2, j3, j4, j5, j6, vel=vel, acc=acc)
+                    else:
+                        ok_move = self.robot_controller.move_to_joint_pose(j1, j2, j3, j4, j5, j6, vel=vel, acc=acc)
                     if not ok_move:
-                        self.robot_controller._log_error("조인트 이동 실패")
+                        self.robot_controller._log_error("조인트 비동기 이동 실패" if is_async else "조인트 이동 실패")
                 finally:
                     self._busy_event.clear()
             elif cmd == "gripper_move":
@@ -1560,6 +2476,113 @@ class RobotBackend:
             return False, f"{msg}(control={control_value})"
         return True, f"리셋 서비스 성공(control={control_value}, srv={srv_name})"
 
+    def _call_servo_off(self, stop_type: int = 3, timeout_sec: float = 2.0):
+        if ServoOff is None:
+            return False, "ServoOff 서비스 타입 import 실패"
+        if self._dsr_node is None:
+            return False, "DSR 노드가 없어 서보오프 서비스를 호출할 수 없습니다."
+        req = ServoOff.Request()
+        req.stop_type = int(stop_type)
+        ok, _res, srv_name, msg = self._call_service_with_candidates(
+            node=self._dsr_node,
+            srv_type=ServoOff,
+            cache=self._servo_off_clients,
+            relative_name="system/servo_off",
+            req=req,
+            timeout_sec=timeout_sec,
+            action_name="긴급정지 서비스",
+        )
+        if not ok:
+            return False, f"{msg}(stop_type={int(stop_type)})"
+        return True, f"긴급정지 서비스 성공(stop_type={int(stop_type)}, srv={srv_name})"
+
+    def _call_move_stop(self, stop_mode: int = 2, timeout_sec: float = 2.0):
+        if MoveStop is None:
+            return False, "MoveStop 서비스 타입 import 실패"
+        if self._dsr_node is None:
+            return False, "DSR 노드가 없어 모션정지 서비스를 호출할 수 없습니다."
+        req = MoveStop.Request()
+        mode = int(stop_mode)
+        req.stop_mode = mode
+
+        # move_stop은 "응답이 늦어도 실제 정지는 즉시 반영"되는 경우가 있어
+        # 짧은 ACK 대기 후 상태 검증 경로(send_motion_stop)로 빠르게 넘긴다.
+        call_timeout = max(0.12, min(0.9, float(timeout_sec)))
+        wait_timeout = max(0.08, min(0.2, call_timeout))
+        candidates = list(self._service_name_candidates("motion/move_stop"))
+        with self._move_stop_service_lock:
+            preferred = self._move_stop_preferred_srv
+        if preferred in candidates:
+            candidates = [preferred] + [name for name in candidates if name != preferred]
+
+        last_msg = "모션정지 서비스가 준비되지 않았습니다."
+        for srv_name in candidates:
+            cli = self._get_or_create_service_client(self._dsr_node, self._move_stop_clients, MoveStop, srv_name)
+            if not cli.wait_for_service(timeout_sec=wait_timeout):
+                last_msg = f"{srv_name} 서비스가 준비되지 않았습니다."
+                continue
+
+            try:
+                future = cli.call_async(req)
+            except Exception as exc:
+                last_msg = f"{srv_name} 서비스 호출 실패: {exc}"
+                continue
+
+            end_at = time.monotonic() + call_timeout
+            while time.monotonic() < end_at:
+                if future.done():
+                    break
+                time.sleep(0.01)
+
+            if not future.done():
+                with self._move_stop_service_lock:
+                    self._move_stop_preferred_srv = srv_name
+                self._watch_move_stop_future(future, srv_name=srv_name, stop_mode=mode)
+                return True, f"모션정지 요청 전송(stop_mode={mode}, srv={srv_name}, ack=지연허용)"
+
+            if future.exception() is not None:
+                last_msg = f"{srv_name} 서비스 예외: {future.exception()}"
+                continue
+
+            res = future.result()
+            if res is None or not bool(getattr(res, "success", False)):
+                last_msg = f"{srv_name} 서비스 실패"
+                continue
+
+            with self._move_stop_service_lock:
+                self._move_stop_preferred_srv = srv_name
+            return True, f"모션정지 서비스 성공(stop_mode={mode}, srv={srv_name})"
+
+        return False, f"{last_msg}(stop_mode={mode})"
+
+    def _watch_move_stop_future(self, future, *, srv_name: str, stop_mode: int):
+        def _worker():
+            deadline = time.monotonic() + 2.0
+            while time.monotonic() < deadline:
+                if future.done():
+                    break
+                time.sleep(0.02)
+            if not future.done():
+                return
+            if self.robot_controller is None:
+                return
+            try:
+                if future.exception() is not None:
+                    self.robot_controller._log_error(
+                        f"[정지] move_stop 지연 응답 실패(srv={srv_name}, stop_mode={int(stop_mode)}): {future.exception()}"
+                    )
+                    return
+                res = future.result()
+                ok = bool(getattr(res, "success", False))
+                if ok:
+                    self.robot_controller._log_info(
+                        f"[정지] move_stop 지연 응답 확인(srv={srv_name}, stop_mode={int(stop_mode)})"
+                    )
+            except Exception:
+                return
+
+        threading.Thread(target=_worker, daemon=True).start()
+
     def _call_set_robot_mode(self, mode_value: int, timeout_sec: float = 2.0):
         if SetRobotMode is None:
             return False, "SetRobotMode 서비스 타입 import 실패"
@@ -1891,6 +2914,1189 @@ class RobotBackend:
             return True, f"리셋 완료: {name} -> STANDBY, {gr_msg}"
         return True, f"리셋 완료: {name} -> STANDBY, 하지만 {gr_msg}"
 
+    def run_voice_order_runtime(
+        self,
+        input_text: str,
+        recommend_menu: str = "",
+        allow_llm: bool = True,
+        request_stt: bool = False,
+        audio_bytes=None,
+        audio_filename: str = "recording.webm",
+        timeout_sec: float = VOICE_ORDER_RUNTIME_TIMEOUT_SEC,
+        event_callback=None,
+        cancel_checker=None,
+    ):
+        text = str(input_text or "").strip()
+        rec = str(recommend_menu or "").strip()
+        llm_on = bool(allow_llm)
+        req_stt = bool(request_stt) or (not bool(text))
+        ok, payload, message = run_voice_order_request(
+            input_text=text,
+            recommend_menu=rec,
+            allow_llm=llm_on,
+            request_stt=req_stt,
+            audio_bytes=audio_bytes,
+            audio_filename=str(audio_filename or "recording.webm"),
+            timeout_sec=float(timeout_sec),
+            event_callback=event_callback,
+            cancel_checker=cancel_checker,
+        )
+        with self._voice_order_lock:
+            self._voice_order_last_payload = payload
+            self._voice_order_last_seen_at = time.monotonic()
+        if ok:
+            return True, payload, str(message or "음성처리 결과 수신 완료")
+        return False, payload, str(message or "음성처리 실패")
+
+    def get_voice_order_snapshot(self):
+        with self._voice_order_lock:
+            payload = self._voice_order_last_payload
+            seen_at = self._voice_order_last_seen_at
+            if payload is None:
+                return None, seen_at
+            return dict(payload), seen_at
+
+    def start_bartender_sequence(self, mode: str = "manual", request: dict | None = None):
+        return self._bartender_sequence_manager.start(mode=mode, request=request)
+
+    def stop_bartender_sequence(self, reason: str = ""):
+        return self._bartender_sequence_manager.stop(reason=reason)
+
+    def reset_bartender_sequence(self, reason: str = ""):
+        return self._bartender_sequence_manager.reset(reason=reason)
+
+    def get_bartender_sequence_snapshot(self):
+        return self._bartender_sequence_manager.get_snapshot()
+
+    def get_bartender_sequence_precheck(self, mode: str = "auto"):
+        return self._bartender_sequence_manager.get_precheck(mode=mode)
+
+    def notify_bartender_tts_done(self, run_id: int | None = None):
+        return self._bartender_sequence_manager.notify_tts_done(run_id=run_id)
+
+    def _start_bartender_sequence_api_server(self, progress_callback=None):
+        if self._bartender_sequence_api_server is not None:
+            return True, "시퀀스 API 서버 이미 실행 중"
+        server = BartenderSequenceApiServer(
+            self,
+            host=BARTENDER_SEQUENCE_API_HOST,
+            port=BARTENDER_SEQUENCE_API_PORT,
+        )
+        ok, msg = server.start()
+        if ok:
+            self._bartender_sequence_api_server = server
+        self._report_progress(progress_callback, 100, msg)
+        if self.robot_controller is not None:
+            if ok:
+                self.robot_controller._log_info(msg)
+            else:
+                self.robot_controller._log_error(msg)
+        return ok, msg
+
+    def _stop_bartender_sequence_api_server(self):
+        server = self._bartender_sequence_api_server
+        self._bartender_sequence_api_server = None
+        if server is None:
+            return True, "시퀀스 API 서버 미실행"
+        return server.stop()
+
+    def _setup_bartender_action_sources(self, progress_callback=None):
+        if self.robot_controller is None:
+            return False, "로봇 컨트롤러가 준비되지 않았습니다."
+
+        if RosStringMsg is None:
+            self._report_progress(progress_callback, 94, "vision1 메타 구독 비활성화: std_msgs/String import 실패")
+        elif self._vision1_meta_sub is None:
+            try:
+                self._vision1_meta_sub = self.robot_controller.create_subscription(
+                    RosStringMsg,
+                    VISION1_META_TOPIC,
+                    self._on_vision1_meta_msg,
+                    30,
+                )
+                self._report_progress(progress_callback, 94, f"vision1 메타 구독 시작: {VISION1_META_TOPIC}")
+            except Exception as e:
+                if self.robot_controller is not None:
+                    self.robot_controller._log_error(f"vision1 메타 구독 실패: {e}")
+
+        if RosStringMsg is None:
+            self._report_progress(progress_callback, 94, "vision2 메타 구독 비활성화: std_msgs/String import 실패")
+        elif self._vision2_meta_sub is None:
+            try:
+                self._vision2_meta_sub = self.robot_controller.create_subscription(
+                    RosStringMsg,
+                    VISION2_META_TOPIC,
+                    self._on_vision2_meta_msg,
+                    30,
+                )
+                self._report_progress(progress_callback, 94, f"vision2 메타 구독 시작: {VISION2_META_TOPIC}")
+            except Exception as e:
+                if self.robot_controller is not None:
+                    self.robot_controller._log_error(f"vision2 메타 구독 실패: {e}")
+
+        if RosCameraInfoMsg is None:
+            self._report_progress(progress_callback, 94, "vision1 카메라정보 구독 비활성화: CameraInfo import 실패")
+        elif self._vision1_camera_info_sub is None:
+            try:
+                topic = str(VISION1_CAMERA_INFO_TOPIC_PRIMARY or "").strip()
+                self._vision1_camera_info_sub = self.robot_controller.create_subscription(
+                    RosCameraInfoMsg,
+                    topic,
+                    self._on_vision1_camera_info_msg,
+                    10,
+                )
+                self._vision1_camera_info_topic_in_use = topic
+                self._report_progress(progress_callback, 94, f"vision1 CameraInfo 구독 시작: {topic}")
+            except Exception as e:
+                if self.robot_controller is not None:
+                    self.robot_controller._log_error(f"vision1 CameraInfo 구독 실패: {e}")
+
+        ok_aff, msg_aff = self._load_vision1_affine_from_file(force=False)
+        if not ok_aff and self.robot_controller is not None:
+            self.robot_controller._log_error(msg_aff)
+        return ok_aff, msg_aff
+
+    def _stop_bartender_action_sources(self):
+        with self._source_lock:
+            self._destroy_sub_safe(self._vision1_meta_sub)
+            self._destroy_sub_safe(self._vision2_meta_sub)
+            self._destroy_sub_safe(self._vision1_camera_info_sub)
+            self._vision1_meta_sub = None
+            self._vision2_meta_sub = None
+            self._vision1_camera_info_sub = None
+            self._vision1_camera_info_topic_in_use = None
+        return True, "bartender action 구독 종료 완료"
+
+    def _on_vision1_meta_msg(self, msg):
+        raw = str(getattr(msg, "data", "") or "").strip()
+        if not raw:
+            return
+        payload = None
+        try:
+            decoded = json.loads(raw)
+            if isinstance(decoded, dict):
+                payload = dict(decoded)
+        except Exception:
+            payload = None
+        if payload is None:
+            return
+        with self._vision1_meta_lock:
+            self._vision1_meta_payload = payload
+            self._vision1_meta_seen_at = time.monotonic()
+
+    def _on_vision2_meta_msg(self, msg):
+        raw = str(getattr(msg, "data", "") or "").strip()
+        if not raw:
+            return
+        payload = None
+        try:
+            decoded = json.loads(raw)
+            if isinstance(decoded, dict):
+                payload = dict(decoded)
+        except Exception:
+            payload = None
+        if payload is None:
+            return
+        with self._vision2_meta_lock:
+            self._vision2_meta_payload = payload
+            self._vision2_meta_seen_at = time.monotonic()
+
+    def _on_vision1_camera_info_msg(self, msg):
+        try:
+            k = getattr(msg, "k", None)
+            if k is None or len(k) < 9:
+                return
+            fx = float(k[0])
+            fy = float(k[4])
+            cx = float(k[2])
+            cy = float(k[5])
+            if fx <= 1e-9 or fy <= 1e-9:
+                return
+        except Exception:
+            return
+        with self._vision1_intrinsics_lock:
+            self._vision1_intrinsics = (fx, fy, cx, cy)
+
+    def _resolve_project_path(self, path_text: str):
+        path = str(path_text or "").strip()
+        if not path:
+            return ""
+        if os.path.isabs(path):
+            return path
+        return os.path.normpath(os.path.join(PROJECT_ROOT, path))
+
+    def _candidate_vision1_affine_paths(self):
+        candidates = []
+        try:
+            rows = self._load_param_rows()
+            for key in ("active_calibration_path_1", "active_calibration_path"):
+                values = rows.get(key, [])
+                if values:
+                    resolved = self._resolve_project_path(values[0])
+                    if resolved and os.path.isfile(resolved):
+                        candidates.append(resolved)
+        except Exception:
+            pass
+
+        try:
+            env_path = self._resolve_project_path(os.environ.get("BARTENDER_VISION1_AFFINE_PATH", ""))
+            if env_path and os.path.isfile(env_path):
+                candidates.append(env_path)
+        except Exception:
+            pass
+
+        try:
+            paths = sorted(glob.glob(os.path.join(CALIB_DIR, "calib_matrix_*.txt")), key=os.path.getmtime, reverse=True)
+            candidates.extend([p for p in paths if os.path.isfile(p)])
+        except Exception:
+            pass
+
+        deduped = []
+        seen = set()
+        for path in candidates:
+            abs_path = os.path.abspath(path)
+            if abs_path in seen:
+                continue
+            seen.add(abs_path)
+            deduped.append(abs_path)
+        return deduped
+
+    def _parse_affine_file(self, file_path: str):
+        rows = {}
+        with open(file_path, "r", encoding="utf-8") as f:
+            for raw in f:
+                line = str(raw or "").strip()
+                if (not line) or line.startswith("#") or ("=" not in line):
+                    continue
+                key, val = line.split("=", 1)
+                key = str(key or "").strip().lower()
+                if key not in ("m0", "m1", "m2", "m3", "r0", "r1", "r2", "t"):
+                    continue
+                parts = [p.strip() for p in str(val or "").split(",")]
+                if len(parts) < 3:
+                    continue
+                try:
+                    rows[key] = [float(parts[0]), float(parts[1]), float(parts[2])]
+                except Exception:
+                    continue
+
+        if all(k in rows for k in ("m0", "m1", "m2", "m3")):
+            return [rows["m0"], rows["m1"], rows["m2"], rows["m3"]]
+        if all(k in rows for k in ("r0", "r1", "r2", "t")):
+            return [rows["r0"], rows["r1"], rows["r2"], rows["t"]]
+        raise ValueError("유효한 affine(m0~m3 또는 r0~r2,t) 데이터가 없습니다.")
+
+    def _load_vision1_affine_from_file(self, force: bool = False):
+        with self._vision1_affine_lock:
+            has_cached = self._vision1_affine_3x4 is not None
+            cached_path = os.path.abspath(self._vision1_affine_path) if self._vision1_affine_path else ""
+
+        candidates = self._candidate_vision1_affine_paths()
+        preferred_path = os.path.abspath(candidates[0]) if candidates else ""
+        if (not force) and has_cached:
+            if preferred_path and cached_path and (preferred_path == cached_path):
+                return True, f"vision1 affine 유지: {self._vision1_affine_path or '-'}"
+            if not preferred_path:
+                return True, f"vision1 affine 유지: {self._vision1_affine_path or '-'}"
+
+        last_err = "vision1 affine 파일을 찾지 못했습니다."
+        for path in candidates:
+            try:
+                affine = self._parse_affine_file(path)
+                with self._vision1_affine_lock:
+                    self._vision1_affine_3x4 = [list(row[:3]) for row in affine[:4]]
+                    self._vision1_affine_path = path
+                if cached_path and (os.path.abspath(path) != cached_path):
+                    return True, f"vision1 affine 갱신 로드 완료: {cached_path} -> {path}"
+                return True, f"vision1 affine 로드 완료: {path}"
+            except Exception as e:
+                last_err = f"vision1 affine 로드 실패({path}): {e}"
+                continue
+        return False, last_err
+
+    def _get_vision1_affine_3x4(self):
+        with self._vision1_affine_lock:
+            if self._vision1_affine_3x4 is None:
+                return None
+            return [list(row[:3]) for row in self._vision1_affine_3x4[:4]]
+
+    def get_vision1_meta_snapshot(self):
+        with self._vision1_meta_lock:
+            payload = self._vision1_meta_payload
+            seen_at = self._vision1_meta_seen_at
+        if payload is None:
+            return None, seen_at
+        return dict(payload), seen_at
+
+    def get_vision2_meta_snapshot(self):
+        with self._vision2_meta_lock:
+            payload = self._vision2_meta_payload
+            seen_at = self._vision2_meta_seen_at
+        if payload is None:
+            return None, seen_at
+        return dict(payload), seen_at
+
+    def get_current_volume_ml(self, *, max_age_sec: float | None = None):
+        payload, seen_at = self.get_vision2_meta_snapshot()
+        if payload is None or seen_at is None:
+            return None, "vision2 메타데이터 없음"
+        try:
+            age = max(0.0, time.monotonic() - float(seen_at))
+        except Exception:
+            age = float("inf")
+        if max_age_sec is None:
+            stale_limit = float(VISION2_META_STALE_SEC)
+        else:
+            try:
+                stale_limit = max(0.0, float(max_age_sec))
+            except Exception:
+                stale_limit = float(VISION2_META_STALE_SEC)
+        if age > stale_limit:
+            return None, f"vision2 메타데이터 지연: {age * 1000.0:.0f}ms"
+        volume_ml = self._extract_vision2_volume_ml(payload)
+        if volume_ml is None:
+            return None, "vision2 volume_ml 파싱 실패"
+        return float(volume_ml), "ok"
+
+    def _extract_vision2_volume_ml(self, payload):
+        if not isinstance(payload, dict):
+            return None
+        candidate = payload.get("volume_ml", None)
+        if candidate is None:
+            liquid = payload.get("liquid", None)
+            if isinstance(liquid, dict):
+                candidate = liquid.get("volume_ml", None)
+        try:
+            value = float(candidate)
+        except Exception:
+            return None
+        if not math.isfinite(value):
+            return None
+        return float(value)
+
+    def _get_vision1_intrinsics(self):
+        with self._vision1_intrinsics_lock:
+            if self._vision1_intrinsics is None:
+                return None
+            return tuple(float(v) for v in self._vision1_intrinsics[:4])
+
+    def _uvz_to_camera_xyz_mm_vision1(self, u: float, v: float, z_mm: float, require_intrinsics: bool = True):
+        intr = self._get_vision1_intrinsics()
+        if intr is None:
+            if require_intrinsics:
+                return None
+            return float(u), float(v), float(z_mm)
+        fx, fy, cx, cy = intr
+        z = float(z_mm)
+        x = (float(u) - float(cx)) * z / float(fx)
+        y = (float(v) - float(cy)) * z / float(fy)
+        return float(x), float(y), float(z)
+
+    def _vision1_uvz_to_robot_xyz_mm(self, u: float, v: float, z_mm: float):
+        affine = self._get_vision1_affine_3x4()
+        if affine is None:
+            return None, "vision1 affine가 준비되지 않았습니다."
+        cam_xyz = self._uvz_to_camera_xyz_mm_vision1(u, v, z_mm, require_intrinsics=True)
+        if cam_xyz is None:
+            return None, "vision1 카메라 intrinsics가 없어 UVZ 변환을 할 수 없습니다."
+        cx, cy, cz = cam_xyz
+        try:
+            out_x = float(cx) * float(affine[0][0]) + float(cy) * float(affine[1][0]) + float(cz) * float(affine[2][0]) + float(affine[3][0])
+            out_y = float(cx) * float(affine[0][1]) + float(cy) * float(affine[1][1]) + float(cz) * float(affine[2][1]) + float(affine[3][1])
+            out_z = float(cx) * float(affine[0][2]) + float(cy) * float(affine[1][2]) + float(cz) * float(affine[2][2]) + float(affine[3][2])
+        except Exception as e:
+            return None, f"vision1 affine 곱셈 실패: {e}"
+        return (out_x, out_y, out_z), "ok"
+
+    def _parse_menu_offset_map(self, raw_map):
+        parsed = {}
+        if not isinstance(raw_map, dict):
+            return parsed
+        source = raw_map.get("menus", raw_map) if isinstance(raw_map.get("menus", None), dict) else raw_map
+        for key, payload in source.items():
+            code = str(key or "").strip().lower()
+            if not code:
+                continue
+            xyz = None
+            if isinstance(payload, dict):
+                xyz = payload.get("offset_xyz_mm", None)
+            elif isinstance(payload, (list, tuple)):
+                xyz = payload
+            if not isinstance(xyz, (list, tuple)) or len(xyz) < 3:
+                continue
+            try:
+                parsed[code] = (float(xyz[0]), float(xyz[1]), float(xyz[2]))
+            except Exception:
+                continue
+        return parsed
+
+    def _load_menu_xyz_offsets(self, menu_offsets=None):
+        parsed_override = self._parse_menu_offset_map(menu_offsets)
+        if parsed_override:
+            return parsed_override
+        try:
+            if os.path.isfile(MENU_OFFSET_CONFIG_PATH):
+                with open(MENU_OFFSET_CONFIG_PATH, "r", encoding="utf-8") as f:
+                    decoded = json.load(f)
+                parsed = self._parse_menu_offset_map(decoded)
+                if parsed:
+                    return parsed
+        except Exception:
+            pass
+        return {}
+
+    def _parse_menu_gripper_close_map(self, raw_map):
+        parsed = {}
+        if not isinstance(raw_map, dict):
+            return parsed
+        source = raw_map.get("menus", raw_map) if isinstance(raw_map.get("menus", None), dict) else raw_map
+        for key, payload in source.items():
+            code = str(key or "").strip().lower()
+            if not code or (not isinstance(payload, dict)):
+                continue
+            try:
+                value = float(payload.get("gripper_close_mm"))
+            except Exception:
+                continue
+            if (not math.isfinite(value)) or value < 0.0:
+                continue
+            parsed[code] = float(value)
+        return parsed
+
+    def _load_menu_gripper_close_mm(self, menu_offsets=None):
+        parsed_override = self._parse_menu_gripper_close_map(menu_offsets)
+        if parsed_override:
+            return parsed_override
+        try:
+            if os.path.isfile(MENU_OFFSET_CONFIG_PATH):
+                with open(MENU_OFFSET_CONFIG_PATH, "r", encoding="utf-8") as f:
+                    decoded = json.load(f)
+                parsed = self._parse_menu_gripper_close_map(decoded)
+                if parsed:
+                    return parsed
+        except Exception:
+            pass
+        return {}
+
+    def _get_menu_xyz_offset(self, menu_code: str, offset_map: dict):
+        code = str(menu_code or "").strip().lower()
+        xyz = offset_map.get(code, (0.0, 0.0, 0.0))
+        return float(xyz[0]), float(xyz[1]), float(xyz[2])
+
+    def _execute_bartender_robot_action_script(self, context: dict):
+        script_path = str(os.environ.get("BARTENDER_ROBOT_ACTION_SCRIPT", BARTENDER_ROBOT_ACTION_SCRIPT_PATH) or "").strip()
+        if not script_path:
+            script_path = BARTENDER_ROBOT_ACTION_SCRIPT_PATH
+        if not os.path.isabs(script_path):
+            script_path = self._resolve_project_path(script_path)
+        if not os.path.isfile(script_path):
+            return False, f"로봇동작 플래너 파일 없음: {script_path}", {}
+        try:
+            proc = subprocess.run(
+                [sys.executable, script_path],
+                input=json.dumps(dict(context or {}), ensure_ascii=False),
+                text=True,
+                capture_output=True,
+                timeout=float(BARTENDER_ROBOT_ACTION_SCRIPT_TIMEOUT_SEC),
+                check=False,
+            )
+        except Exception as e:
+            return False, f"로봇동작 플래너 실행 실패: {e}", {}
+
+        stdout_text = str(proc.stdout or "").strip()
+        stderr_text = str(proc.stderr or "").strip()
+        if not stdout_text:
+            msg = stderr_text or f"플래너 출력 없음(returncode={proc.returncode})"
+            return False, msg, {}
+
+        out = None
+        for line in reversed(stdout_text.splitlines()):
+            raw = str(line or "").strip()
+            if not raw:
+                continue
+            try:
+                maybe = json.loads(raw)
+            except Exception:
+                continue
+            if isinstance(maybe, dict):
+                out = maybe
+                break
+        if out is None:
+            return False, f"플래너 JSON 파싱 실패: {stdout_text[-240:]}", {}
+
+        ok = bool(out.get("ok", False))
+        msg = str(out.get("message") or "").strip()
+        if (not ok) and stderr_text:
+            msg = f"{msg} | stderr: {stderr_text}" if msg else stderr_text
+        if not msg:
+            msg = "완료" if ok else "실패"
+        return ok, msg, out
+
+    def _execute_bartender_robot_action_native(self, context: dict, offset_map, execute_enabled: bool, move_speed):
+        if run_bartender_robot_action is None:
+            return False, "로봇동작 플래너 import 실패", {}
+        api = NativeRobotActionApi(
+            backend=self,
+            offset_map=offset_map,
+            execute_enabled=bool(execute_enabled),
+            move_speed=move_speed,
+        )
+        try:
+            out = run_bartender_robot_action(dict(context or {}), api=api)
+        except Exception as e:
+            return False, f"로봇동작 네이티브 시퀀스 예외: {e}", {}
+
+        if not isinstance(out, dict):
+            return False, "로봇동작 플래너 결과 형식 오류", {}
+        ok = bool(out.get("ok", False))
+        msg = str(out.get("message") or "").strip()
+        if not msg:
+            msg = "완료" if ok else "실패"
+        if not ok:
+            return False, msg, out
+
+        speed_txt = "-" if move_speed is None else f"{move_speed:.0f}%"
+        mode_txt = "실행" if execute_enabled else "계획"
+        summary = api.summary_tail()
+        return True, f"{msg} | {mode_txt}시퀀스 완료({speed_txt}) | {summary}", out
+
+    def _call_with_retry(self, fn, timeout_sec: float = 8.0, poll_sec: float = 0.2):
+        deadline = time.monotonic() + max(0.5, float(timeout_sec))
+        last_msg = "실행 실패"
+        while time.monotonic() <= deadline:
+            ok, msg = fn()
+            text = str(msg or "").strip()
+            if ok:
+                return True, text or "완료"
+            last_msg = text or last_msg
+            if ("현재 작업 중" in last_msg) or ("백엔드 준비 중" in last_msg):
+                time.sleep(max(0.05, float(poll_sec)))
+                continue
+            return False, last_msg
+        return False, f"타임아웃: {last_msg}"
+
+    def _parse_robot_action_abc(self):
+        raw = str(os.environ.get("BARTENDER_ROBOT_ACTION_ABC", "180,0,180") or "").strip()
+        parts = [p.strip() for p in raw.split(",")]
+        if len(parts) != 3:
+            return 180.0, 0.0, 180.0
+        try:
+            return float(parts[0]), float(parts[1]), float(parts[2])
+        except Exception:
+            return 180.0, 0.0, 180.0
+
+    def _resolve_robot_action_abc(self):
+        # 1) 실시간 current_posx(기본좌표계)에서 현재 TCP 자세 ABC 우선 사용
+        posx_live, sol_live, err_live = self.get_current_posx_live()
+        if err_live is None and posx_live is not None and len(posx_live) >= 6:
+            return (
+                float(posx_live[3]),
+                float(posx_live[4]),
+                float(posx_live[5]),
+            ), (f"get_current_posx(sol={int(sol_live)})" if sol_live is not None else "get_current_posx")
+
+        # 2) RobotState/JointState 캐시 posx에서 ABC 사용
+        with self._position_lock:
+            posx_cached = None if self._last_positions is None else self._last_positions[1]
+        if isinstance(posx_cached, (list, tuple)) and len(posx_cached) >= 6:
+            return (
+                float(posx_cached[3]),
+                float(posx_cached[4]),
+                float(posx_cached[5]),
+            ), "state_cache"
+
+        # 3) 최종 폴백: ENV(BARTENDER_ROBOT_ACTION_ABC)
+        return self._parse_robot_action_abc(), "env(BARTENDER_ROBOT_ACTION_ABC)"
+
+    def _execute_planner_sequence_steps(self, sequence_steps, offset_map, execute_enabled: bool, move_speed):
+        if not isinstance(sequence_steps, list) or not sequence_steps:
+            return False, "시퀀스 step 목록이 비어 있습니다."
+
+        def _emit_robot_action_log(message: str, *, is_error: bool = False):
+            text = str(message or "").strip()
+            if not text:
+                return
+            try:
+                if self.robot_controller is not None:
+                    if is_error:
+                        self.robot_controller._log_error(f"[로봇동작] {text}")
+                    else:
+                        self.robot_controller._log_info(f"[로봇동작] {text}")
+                else:
+                    print(f"[로봇동작]{'[오류]' if is_error else ''} {text}")
+            except Exception:
+                pass
+
+        allowed_backend_calls = {
+            "set_robot_mode",
+            "send_move_home",
+            "send_move_cartesian",
+            "send_move_cartesian_async",
+            "send_move_joint",
+            "send_move_joint_async",
+            "send_gripper_move",
+            "send_motion_stop",
+            "send_emergency_stop",
+        }
+        step_logs = []
+        resolved_targets = {}
+
+        for idx, raw_step in enumerate(sequence_steps, start=1):
+            if not isinstance(raw_step, dict):
+                return False, f"step[{idx}] 형식 오류(dict 필요)"
+            step = dict(raw_step)
+            op = str(step.get("op", "") or "").strip().lower()
+            label = str(step.get("label", f"step{idx}") or f"step{idx}").strip()
+            enabled = bool(step.get("enabled", True))
+
+            if not op:
+                return False, f"step[{idx}] op 누락"
+
+            if op == "placeholder":
+                note = str(step.get("note", "") or "").strip()
+                step_logs.append(f"{idx}:{label}(placeholder{': ' + note if note else ''})")
+                _emit_robot_action_log(step_logs[-1])
+                continue
+
+            if not enabled:
+                step_logs.append(f"{idx}:{label}(비활성)")
+                _emit_robot_action_log(step_logs[-1])
+                continue
+
+            if op == "set_robot_mode":
+                mode = int(step.get("mode", 1))
+                if execute_enabled:
+                    ok_mode, mode_msg = self._call_with_retry(
+                        lambda: self.set_robot_mode(mode, timeout_sec=6.0),
+                        timeout_sec=8.0,
+                        poll_sec=0.2,
+                    )
+                    if not ok_mode:
+                        return False, f"{idx}:{label} 실패: {mode_msg}"
+                step_logs.append(f"{idx}:{label}(mode={mode}{'' if execute_enabled else ', 계획'})")
+                _emit_robot_action_log(step_logs[-1])
+                continue
+
+            if op == "resolve_detection_target":
+                target_key = str(step.get("target_key", "") or "").strip()
+                target_uv = step.get("target_uv")
+                target_depth_m = step.get("target_depth_m")
+                ingredient_code = str(step.get("ingredient_code", "") or "").strip().lower()
+                if not target_key:
+                    return False, f"{idx}:{label} 실패: target_key 누락"
+                if not isinstance(target_uv, (list, tuple)) or len(target_uv) < 2:
+                    return False, f"{idx}:{label} 실패: target_uv 형식 오류"
+                try:
+                    u = float(target_uv[0])
+                    v = float(target_uv[1])
+                    z_mm = float(target_depth_m) * 1000.0
+                except Exception:
+                    return False, f"{idx}:{label} 실패: target_uv/target_depth_m 파싱 실패"
+                if (not math.isfinite(z_mm)) or z_mm <= 0.0:
+                    return False, f"{idx}:{label} 실패: depth 값 오류({target_depth_m})"
+
+                robot_xyz, xyz_msg = self._vision1_uvz_to_robot_xyz_mm(u, v, z_mm)
+                if robot_xyz is None:
+                    return False, f"{idx}:{label} 실패: {xyz_msg}"
+                tx, ty, tz = [float(vv) for vv in robot_xyz[:3]]
+                base_x, base_y, base_z = tx, ty, tz
+                menu_ox, menu_oy, menu_oz = 0.0, 0.0, 0.0
+
+                if bool(step.get("apply_menu_offset", True)):
+                    menu_ox, menu_oy, menu_oz = self._get_menu_xyz_offset(ingredient_code, offset_map)
+                    tx += float(menu_ox)
+                    ty += float(menu_oy)
+                    tz += float(menu_oz)
+
+                extra_offset = step.get("extra_offset_xyz_mm", [0.0, 0.0, 0.0])
+                try:
+                    ex = float(extra_offset[0]) if isinstance(extra_offset, (list, tuple)) and len(extra_offset) >= 1 else 0.0
+                    ey = float(extra_offset[1]) if isinstance(extra_offset, (list, tuple)) and len(extra_offset) >= 2 else 0.0
+                    ez = float(extra_offset[2]) if isinstance(extra_offset, (list, tuple)) and len(extra_offset) >= 3 else 0.0
+                except Exception:
+                    ex, ey, ez = 0.0, 0.0, 0.0
+                tx += ex
+                ty += ey
+                tz += ez
+
+                resolved_targets[target_key] = (tx, ty, tz)
+                step_logs.append(f"{idx}:{label}(key={target_key}, XYZ={tx:.1f},{ty:.1f},{tz:.1f})")
+                _emit_robot_action_log(
+                    f"{step_logs[-1]}, base=({base_x:.1f},{base_y:.1f},{base_z:.1f}), "
+                    f"menu_offset=({float(menu_ox):.1f},{float(menu_oy):.1f},{float(menu_oz):.1f}), "
+                    f"extra_offset=({ex:.1f},{ey:.1f},{ez:.1f}), "
+                    f"UV=({u:.1f},{v:.1f}), depth={z_mm:.1f}mm, ingredient={ingredient_code or '-'}"
+                )
+                continue
+
+            if op == "movel_resolved_target":
+                target_key = str(step.get("target_key", "") or "").strip()
+                if not target_key:
+                    return False, f"{idx}:{label} 실패: target_key 누락"
+                xyz = resolved_targets.get(target_key)
+                if xyz is None:
+                    return False, f"{idx}:{label} 실패: target_key={target_key} 미해결"
+                tx, ty, tz = [float(vv) for vv in xyz[:3]]
+                xyzabc = step.get("xyzabc", None)
+                if isinstance(xyzabc, (list, tuple)) and len(xyzabc) >= 3:
+                    try:
+                        tx += float(xyzabc[0])
+                        ty += float(xyzabc[1])
+                        tz += float(xyzabc[2])
+                    except Exception:
+                        pass
+                offset = step.get("offset_xyz_mm", [0.0, 0.0, 0.0])
+                try:
+                    ox = float(offset[0]) if isinstance(offset, (list, tuple)) and len(offset) >= 1 else 0.0
+                    oy = float(offset[1]) if isinstance(offset, (list, tuple)) and len(offset) >= 2 else 0.0
+                    oz = float(offset[2]) if isinstance(offset, (list, tuple)) and len(offset) >= 3 else 0.0
+                except Exception:
+                    ox, oy, oz = 0.0, 0.0, 0.0
+                tx += ox
+                ty += oy
+                tz += oz
+
+                abc = step.get("abc", None)
+                if isinstance(xyzabc, (list, tuple)) and len(xyzabc) >= 6:
+                    try:
+                        a, b, c = float(xyzabc[3]), float(xyzabc[4]), float(xyzabc[5])
+                    except Exception:
+                        (a, b, c), _abc_source = self._resolve_robot_action_abc()
+                elif isinstance(abc, (list, tuple)) and len(abc) >= 3:
+                    try:
+                        a, b, c = float(abc[0]), float(abc[1]), float(abc[2])
+                    except Exception:
+                        (a, b, c), _abc_source = self._resolve_robot_action_abc()
+                else:
+                    (a, b, c), _abc_source = self._resolve_robot_action_abc()
+
+                try:
+                    approach_up_mm = max(0.0, float(step.get("approach_up_mm", 0.0)))
+                except Exception:
+                    approach_up_mm = 0.0
+                step_vel = step.get("vel", None)
+                step_acc = step.get("acc", None)
+                try:
+                    eff_vel = move_speed if step_vel is None else float(step_vel)
+                except Exception:
+                    eff_vel = move_speed
+                try:
+                    eff_acc = move_speed if step_acc is None else float(step_acc)
+                except Exception:
+                    eff_acc = move_speed
+
+                if execute_enabled:
+                    if approach_up_mm > 0.0:
+                        ok_ap, msg_ap = self._call_with_retry(
+                            lambda: self.send_move_cartesian(tx, ty, tz + approach_up_mm, a, b, c, eff_vel, eff_acc),
+                            timeout_sec=14.0,
+                            poll_sec=0.2,
+                        )
+                        if not ok_ap:
+                            return False, f"{idx}:{label} 접근이동 실패: {msg_ap}"
+                    ok_tg, msg_tg = self._call_with_retry(
+                        lambda: self.send_move_cartesian(tx, ty, tz, a, b, c, eff_vel, eff_acc),
+                        timeout_sec=14.0,
+                        poll_sec=0.2,
+                    )
+                    if not ok_tg:
+                        return False, f"{idx}:{label} 타겟이동 실패: {msg_tg}"
+                step_logs.append(f"{idx}:{label}(key={target_key}, XYZ={tx:.1f},{ty:.1f},{tz:.1f})")
+                _emit_robot_action_log(
+                    f"{step_logs[-1]}, ABC={a:.1f},{b:.1f},{c:.1f}, approach_up={approach_up_mm:.1f}mm"
+                )
+                continue
+
+            if op == "move_to_detection":
+                target_uv = step.get("target_uv")
+                target_depth_m = step.get("target_depth_m")
+                ingredient_code = str(step.get("ingredient_code", "") or "").strip().lower()
+                if not isinstance(target_uv, (list, tuple)) or len(target_uv) < 2:
+                    return False, f"{idx}:{label} 실패: target_uv 형식 오류"
+                try:
+                    u = float(target_uv[0])
+                    v = float(target_uv[1])
+                    z_mm = float(target_depth_m) * 1000.0
+                except Exception:
+                    return False, f"{idx}:{label} 실패: target_uv/target_depth_m 파싱 실패"
+                if (not math.isfinite(z_mm)) or z_mm <= 0.0:
+                    return False, f"{idx}:{label} 실패: depth 값 오류({target_depth_m})"
+
+                robot_xyz, xyz_msg = self._vision1_uvz_to_robot_xyz_mm(u, v, z_mm)
+                if robot_xyz is None:
+                    return False, f"{idx}:{label} 실패: {xyz_msg}"
+                tx, ty, tz = [float(vv) for vv in robot_xyz[:3]]
+                base_x, base_y, base_z = tx, ty, tz
+                menu_ox, menu_oy, menu_oz = 0.0, 0.0, 0.0
+
+                if bool(step.get("apply_menu_offset", True)):
+                    menu_ox, menu_oy, menu_oz = self._get_menu_xyz_offset(ingredient_code, offset_map)
+                    tx += float(menu_ox)
+                    ty += float(menu_oy)
+                    tz += float(menu_oz)
+
+                extra_offset = step.get("extra_offset_xyz_mm", [0.0, 0.0, 0.0])
+                try:
+                    ex = float(extra_offset[0]) if isinstance(extra_offset, (list, tuple)) and len(extra_offset) >= 1 else 0.0
+                    ey = float(extra_offset[1]) if isinstance(extra_offset, (list, tuple)) and len(extra_offset) >= 2 else 0.0
+                    ez = float(extra_offset[2]) if isinstance(extra_offset, (list, tuple)) and len(extra_offset) >= 3 else 0.0
+                except Exception:
+                    ex, ey, ez = 0.0, 0.0, 0.0
+                tx += ex
+                ty += ey
+                tz += ez
+
+                abc = step.get("abc", None)
+                if isinstance(abc, (list, tuple)) and len(abc) >= 3:
+                    try:
+                        a, b, c = float(abc[0]), float(abc[1]), float(abc[2])
+                    except Exception:
+                        (a, b, c), _abc_source = self._resolve_robot_action_abc()
+                else:
+                    (a, b, c), _abc_source = self._resolve_robot_action_abc()
+
+                try:
+                    approach_up_mm = max(0.0, float(step.get("approach_up_mm", 40.0)))
+                except Exception:
+                    approach_up_mm = 40.0
+
+                if execute_enabled:
+                    if approach_up_mm > 0.0:
+                        ok_ap, msg_ap = self._call_with_retry(
+                            lambda: self.send_move_cartesian(tx, ty, tz + approach_up_mm, a, b, c, move_speed, move_speed),
+                            timeout_sec=14.0,
+                            poll_sec=0.2,
+                        )
+                        if not ok_ap:
+                            return False, f"{idx}:{label} 접근이동 실패: {msg_ap}"
+                    ok_tg, msg_tg = self._call_with_retry(
+                        lambda: self.send_move_cartesian(tx, ty, tz, a, b, c, move_speed, move_speed),
+                        timeout_sec=14.0,
+                        poll_sec=0.2,
+                    )
+                    if not ok_tg:
+                        return False, f"{idx}:{label} 타겟이동 실패: {msg_tg}"
+                step_logs.append(f"{idx}:{label}(XYZ={tx:.1f},{ty:.1f},{tz:.1f})")
+                _emit_robot_action_log(
+                    f"{step_logs[-1]}, base=({base_x:.1f},{base_y:.1f},{base_z:.1f}), "
+                    f"menu_offset=({float(menu_ox):.1f},{float(menu_oy):.1f},{float(menu_oz):.1f}), "
+                    f"extra_offset=({ex:.1f},{ey:.1f},{ez:.1f}), "
+                    f"UV=({u:.1f},{v:.1f}), depth={z_mm:.1f}mm, ABC={a:.1f},{b:.1f},{c:.1f}, "
+                    f"ingredient={ingredient_code or '-'}"
+                )
+                continue
+
+            if op == "wait_volume_target":
+                try:
+                    target_volume_ml = float(step.get("target_volume_ml"))
+                except Exception:
+                    return False, f"{idx}:{label} 실패: target_volume_ml 누락/형식오류"
+                if target_volume_ml < 0.0:
+                    return False, f"{idx}:{label} 실패: target_volume_ml 음수"
+                timeout_sec = 20.0
+                poll_sec = 0.1
+                try:
+                    timeout_sec = max(0.5, float(step.get("timeout_sec", 20.0)))
+                except Exception:
+                    timeout_sec = 20.0
+                try:
+                    poll_sec = max(0.05, float(step.get("poll_sec", 0.1)))
+                except Exception:
+                    poll_sec = 0.1
+
+                if not execute_enabled:
+                    step_logs.append(f"{idx}:{label}(계획 target={target_volume_ml:.1f}ml)")
+                    continue
+
+                start_at = time.monotonic()
+                last_volume = None
+                while (time.monotonic() - start_at) <= timeout_sec:
+                    payload, seen_at = self.get_vision2_meta_snapshot()
+                    if payload is None or seen_at is None:
+                        time.sleep(poll_sec)
+                        continue
+                    age = time.monotonic() - float(seen_at)
+                    if age > float(VISION2_META_STALE_SEC):
+                        time.sleep(poll_sec)
+                        continue
+                    volume_ml = self._extract_vision2_volume_ml(payload)
+                    if volume_ml is None:
+                        time.sleep(poll_sec)
+                        continue
+                    last_volume = float(volume_ml)
+                    if float(volume_ml) >= float(target_volume_ml):
+                        break
+                    time.sleep(poll_sec)
+                else:
+                    if last_volume is None:
+                        return False, f"{idx}:{label} 실패: vision2 용량값을 읽지 못했습니다."
+                    return False, f"{idx}:{label} 실패: 목표용량 미도달({last_volume:.1f}/{target_volume_ml:.1f}ml)"
+
+                step_logs.append(f"{idx}:{label}(volume={last_volume:.1f}/{target_volume_ml:.1f}ml)")
+                _emit_robot_action_log(step_logs[-1])
+                continue
+
+            if op == "wait_sec":
+                try:
+                    wait_s = max(0.0, float(step.get("seconds", 0.0)))
+                except Exception:
+                    return False, f"{idx}:{label} 실패: seconds 형식오류"
+
+                if not execute_enabled:
+                    step_logs.append(f"{idx}:{label}(계획 {wait_s:.2f}s)")
+                    continue
+
+                end_t = time.monotonic() + float(wait_s)
+                while time.monotonic() < end_t:
+                    ok_state, state_msg = self._check_motion_precondition(max_state_age_sec=2.0)
+                    if not ok_state:
+                        return False, f"{idx}:{label} 실패: {state_msg}"
+                    time.sleep(min(0.05, max(0.0, end_t - time.monotonic())))
+                step_logs.append(f"{idx}:{label}({wait_s:.2f}s)")
+                _emit_robot_action_log(step_logs[-1])
+                continue
+
+            if op == "backend_call":
+                method = str(step.get("method", "") or "").strip()
+                if not method:
+                    return False, f"{idx}:{label} 실패: method 누락"
+                if method not in allowed_backend_calls:
+                    return False, f"{idx}:{label} 실패: 미허용 backend_call method={method}"
+                fn = getattr(self, method, None)
+                if not callable(fn):
+                    return False, f"{idx}:{label} 실패: backend method 없음({method})"
+
+                args = step.get("args", [])
+                kwargs = step.get("kwargs", {})
+                if isinstance(args, tuple):
+                    args = list(args)
+                if not isinstance(args, list):
+                    args = [args]
+                if not isinstance(kwargs, dict):
+                    kwargs = {}
+                kwargs = dict(kwargs)
+                if method in ("send_move_home", "send_move_cartesian", "send_move_cartesian_async", "send_move_joint", "send_move_joint_async"):
+                    if move_speed is not None:
+                        kwargs.setdefault("vel", move_speed)
+                        kwargs.setdefault("acc", move_speed)
+
+                if execute_enabled:
+                    try:
+                        timeout_sec = float(step.get("timeout_sec", 14.0))
+                    except Exception:
+                        timeout_sec = 14.0
+                    ok_call, call_msg = self._call_with_retry(
+                        lambda: fn(*args, **kwargs),
+                        timeout_sec=max(1.0, timeout_sec),
+                        poll_sec=0.2,
+                    )
+                    if not ok_call:
+                        return False, f"{idx}:{label} 실패: {call_msg}"
+                step_logs.append(f"{idx}:{label}({method})")
+                if method in ("send_move_cartesian", "send_move_cartesian_async") and len(args) >= 6:
+                    try:
+                        _emit_robot_action_log(
+                            f"{step_logs[-1]} XYZ={float(args[0]):.1f},{float(args[1]):.1f},{float(args[2]):.1f} "
+                            f"ABC={float(args[3]):.1f},{float(args[4]):.1f},{float(args[5]):.1f}"
+                        )
+                    except Exception:
+                        _emit_robot_action_log(step_logs[-1])
+                elif method in ("send_move_joint", "send_move_joint_async") and len(args) >= 6:
+                    try:
+                        _emit_robot_action_log(
+                            f"{step_logs[-1]} J={','.join(f'{float(v):.1f}' for v in list(args)[:6])}"
+                        )
+                    except Exception:
+                        _emit_robot_action_log(step_logs[-1])
+                else:
+                    _emit_robot_action_log(step_logs[-1])
+                continue
+
+            return False, f"step[{idx}] 미지원 op: {op}"
+
+        summary = " / ".join(step_logs[-6:]) if step_logs else "시퀀스 실행 완료"
+        return True, summary
+
+    def run_bartender_first_ingredient_action(
+        self,
+        order_result: dict,
+        menu_offsets=None,
+        motion_speed_percent=None,
+        execute_enabled_override=None,
+    ):
+        if not self._ready_event.is_set():
+            return False, "백엔드 준비 중입니다."
+        if not isinstance(order_result, dict):
+            return False, "order_result 형식이 올바르지 않습니다."
+
+        status = str(order_result.get("status", "") or "").strip().lower()
+        if status != "success":
+            return False, f"주문 상태가 success가 아닙니다: {status or '-'}"
+
+        ok_src, msg_src = self._setup_bartender_action_sources(progress_callback=None)
+        if (not ok_src) and self.robot_controller is not None:
+            self.robot_controller._log_error(msg_src)
+
+        ok_aff, msg_aff = self._load_vision1_affine_from_file(force=False)
+        if not ok_aff:
+            return False, msg_aff
+        if self.robot_controller is not None and str(msg_aff or "").strip():
+            try:
+                self.robot_controller._log_info(str(msg_aff))
+            except Exception:
+                pass
+
+        meta_payload = None
+        meta_seen_at = None
+        meta_deadline = time.monotonic() + float(VISION1_META_WAIT_SEC)
+        while time.monotonic() <= meta_deadline:
+            meta_payload, meta_seen_at = self.get_vision1_meta_snapshot()
+            if meta_payload is not None and meta_seen_at is not None:
+                age = time.monotonic() - float(meta_seen_at)
+                if age <= float(VISION1_META_STALE_SEC):
+                    break
+            time.sleep(0.05)
+        if meta_payload is None or meta_seen_at is None:
+            return False, f"vision1 메타데이터가 없습니다. 토픽 확인: {VISION1_META_TOPIC}"
+        meta_age = time.monotonic() - float(meta_seen_at)
+        if meta_age > float(VISION1_META_STALE_SEC):
+            return False, f"vision1 메타데이터 지연: {meta_age * 1000.0:.0f}ms"
+
+        intr_deadline = time.monotonic() + 1.0
+        while time.monotonic() <= intr_deadline:
+            if self._get_vision1_intrinsics() is not None:
+                break
+            time.sleep(0.05)
+        if self._get_vision1_intrinsics() is None:
+            topic = self._vision1_camera_info_topic_in_use or VISION1_CAMERA_INFO_TOPIC_PRIMARY
+            return False, f"vision1 CameraInfo 미수신: {topic}"
+
+        context = {
+            "order_result": dict(order_result),
+            "vision1_meta": dict(meta_payload),
+            "requested_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        }
+        if execute_enabled_override is None:
+            execute_enabled = str(os.environ.get("BARTENDER_ROBOT_ACTION_EXECUTE", "0")).strip().lower() in (
+                "1",
+                "true",
+                "yes",
+                "on",
+            )
+        else:
+            execute_enabled = bool(execute_enabled_override)
+        offset_map = self._load_menu_xyz_offsets(menu_offsets=menu_offsets)
+        gripper_close_map = self._load_menu_gripper_close_mm(menu_offsets=menu_offsets)
+        merged_menu_offsets = {"menus": {}}
+        for code in sorted(set(list(offset_map.keys()) + list(gripper_close_map.keys()))):
+            ox, oy, oz = self._get_menu_xyz_offset(code, offset_map)
+            merged_menu_offsets["menus"][str(code)] = {
+                "offset_xyz_mm": [float(ox), float(oy), float(oz)],
+                "gripper_close_mm": float(gripper_close_map.get(code, 41.0)),
+            }
+        context["menu_offsets"] = merged_menu_offsets
+        if self.robot_controller is not None:
+            try:
+                self.robot_controller._log_info(
+                    f"[로봇동작] 적용 메뉴 오프셋: {json.dumps(offset_map, ensure_ascii=False)}"
+                )
+                self.robot_controller._log_info(
+                    f"[로봇동작] 적용 메뉴 파지(mm): {json.dumps(gripper_close_map, ensure_ascii=False)}"
+                )
+            except Exception:
+                pass
+        move_speed = None
+        try:
+            if motion_speed_percent is not None:
+                speed_v = float(motion_speed_percent)
+                if math.isfinite(speed_v):
+                    speed_v = max(0.0, min(100.0, speed_v))
+                    move_speed = 1.0 if speed_v <= 0.0 else float(speed_v)
+        except Exception:
+            move_speed = None
+
+        if BARTENDER_ROBOT_ACTION_NATIVE:
+            if self._busy_event.is_set():
+                return False, "현재 작업 중입니다."
+            self._busy_event.set()
+            try:
+                ok_native, native_msg, _native_out = self._execute_bartender_robot_action_native(
+                    context=context,
+                    offset_map=offset_map,
+                    execute_enabled=bool(execute_enabled),
+                    move_speed=move_speed,
+                )
+                if not ok_native:
+                    return False, f"로봇동작 네이티브 실패: {native_msg}"
+                return True, str(native_msg or "완료")
+            finally:
+                self._busy_event.clear()
+
+        ok_plan, plan_msg, plan_out = self._execute_bartender_robot_action_script(context)
+        if not ok_plan:
+            return False, f"로봇동작 플래너 실패: {plan_msg}"
+
+        plan = plan_out.get("plan", {}) if isinstance(plan_out, dict) else {}
+        sequence_steps = plan.get("sequence_steps")
+        if isinstance(sequence_steps, list) and sequence_steps:
+            ok_seq, seq_msg = self._execute_planner_sequence_steps(
+                sequence_steps,
+                offset_map=offset_map,
+                execute_enabled=bool(execute_enabled),
+                move_speed=move_speed,
+            )
+            if not ok_seq:
+                return False, f"{plan_msg} | {seq_msg}"
+            speed_txt = "-" if move_speed is None else f"{move_speed:.0f}%"
+            mode_txt = "실행" if execute_enabled else "계획"
+            return True, f"{plan_msg} | {mode_txt}시퀀스 완료({speed_txt}) | {seq_msg}"
+
+        # backward compatibility: 구형 플래너 포맷(first_ingredient_code/target_uv/depth)
+        first_code = str(plan.get("first_ingredient_code") or "").strip().lower()
+        target_uv = plan.get("target_uv")
+        target_depth_m = plan.get("target_depth_m")
+        if not first_code:
+            return False, "플래너 결과에 first_ingredient_code 또는 sequence_steps가 없습니다."
+        if not isinstance(target_uv, (list, tuple)) or len(target_uv) < 2:
+            return False, "플래너 결과에 target_uv가 없습니다."
+        try:
+            u = float(target_uv[0])
+            v = float(target_uv[1])
+            z_mm = float(target_depth_m) * 1000.0
+        except Exception:
+            return False, "플래너 결과의 uv/depth 형식이 올바르지 않습니다."
+        if (not math.isfinite(z_mm)) or z_mm <= 0.0:
+            return False, f"플래너 depth가 유효하지 않습니다: {target_depth_m}"
+
+        robot_xyz, xyz_msg = self._vision1_uvz_to_robot_xyz_mm(u, v, z_mm)
+        if robot_xyz is None:
+            return False, xyz_msg
+        tx, ty, tz = [float(vv) for vv in robot_xyz[:3]]
+        ox, oy, oz = self._get_menu_xyz_offset(first_code, offset_map)
+        tx += float(ox)
+        ty += float(oy)
+        tz += float(oz)
+        if not execute_enabled:
+            speed_txt = "-" if move_speed is None else f"{move_speed:.0f}%"
+            return True, f"{plan_msg} | 실행OFF(계획): {first_code} 목표 XYZ=({tx:.1f}, {ty:.1f}, {tz:.1f}), 속도={speed_txt}"
+        ok_mode, mode_msg = self._call_with_retry(
+            lambda: self.set_robot_mode(1, timeout_sec=6.0),
+            timeout_sec=8.0,
+            poll_sec=0.2,
+        )
+        if not ok_mode:
+            return False, f"오토모드 전환 실패: {mode_msg}"
+        (a, b, c), _abc_source = self._resolve_robot_action_abc()
+        ok_move, move_msg = self._call_with_retry(
+            lambda: self.send_move_cartesian(tx, ty, tz, a, b, c, move_speed, move_speed),
+            timeout_sec=14.0,
+            poll_sec=0.2,
+        )
+        if not ok_move:
+            return False, f"첫 재료 타겟 이동 실패: {move_msg}"
+        speed_txt = "-" if move_speed is None else f"{move_speed:.0f}%"
+        return True, f"{plan_msg} | 구형포맷 이동 완료({first_code}) XYZ=({tx:.1f}, {ty:.1f}, {tz:.1f}), 속도={speed_txt}"
+
     def send_pick_place(self, value):
         if not self._ready_event.is_set():
             return False, "백엔드 준비 중입니다."
@@ -1956,7 +4162,7 @@ class RobotBackend:
             return False, state_msg
 
         self._cmd_q.put(("move_vision_point", (tx, ty, tz, td)))
-        return True, f"비전 좌표 이동 시작: X={tx:.2f}, Y={ty:.2f}, Z={tz:.2f} (대기 {td:.1f}s 후 홈 복귀)"
+        return True, f"비전 좌표 이동 시작: X={tx:.2f}, Y={ty:.2f}, Z={tz:.2f} (대기 {td:.1f}s)"
 
     def send_move_cartesian(self, x, y, z, a, b, c, vel=None, acc=None):
         if not self._ready_event.is_set():
@@ -1980,6 +4186,28 @@ class RobotBackend:
             f"A={ta:.2f}, B={tb:.2f}, C={tc:.2f}{speed_text}"
         )
 
+    def send_move_cartesian_async(self, x, y, z, a, b, c, vel=None, acc=None):
+        if not self._ready_event.is_set():
+            return False, "백엔드 준비 중입니다."
+        if self._cmd_q.full():
+            return False, "현재 작업 중입니다."
+        try:
+            tx, ty, tz = float(x), float(y), float(z)
+            ta, tb, tc = float(a), float(b), float(c)
+        except Exception:
+            return False, "XYZABC 값 형식이 올바르지 않습니다."
+        state_ok, state_msg = self._check_motion_precondition(max_state_age_sec=2.0)
+        if not state_ok:
+            return False, state_msg
+        tv = None if vel is None else float(vel)
+        ta2 = None if acc is None else float(acc)
+        self._cmd_q.put(("move_cartesian_async", (tx, ty, tz, ta, tb, tc, tv, ta2)))
+        speed_text = f", 속도={tv:.0f}%" if tv is not None else ""
+        return True, (
+            f"카테시안 비동기 이동 시작: X={tx:.2f}, Y={ty:.2f}, Z={tz:.2f}, "
+            f"A={ta:.2f}, B={tb:.2f}, C={tc:.2f}{speed_text}"
+        )
+
     def send_move_joint(self, j1, j2, j3, j4, j5, j6, vel=None, acc=None):
         if not self._ready_event.is_set():
             return False, "백엔드 준비 중입니다."
@@ -1998,6 +4226,27 @@ class RobotBackend:
         speed_text = f", 속도={tv:.0f}%" if tv is not None else ""
         return True, (
             f"조인트 이동 시작: J1={vals[0]:.2f}, J2={vals[1]:.2f}, J3={vals[2]:.2f}, "
+            f"J4={vals[3]:.2f}, J5={vals[4]:.2f}, J6={vals[5]:.2f}{speed_text}"
+        )
+
+    def send_move_joint_async(self, j1, j2, j3, j4, j5, j6, vel=None, acc=None):
+        if not self._ready_event.is_set():
+            return False, "백엔드 준비 중입니다."
+        if self._cmd_q.full():
+            return False, "현재 작업 중입니다."
+        try:
+            vals = tuple(float(v) for v in (j1, j2, j3, j4, j5, j6))
+        except Exception:
+            return False, "조인트 값 형식이 올바르지 않습니다."
+        state_ok, state_msg = self._check_motion_precondition(max_state_age_sec=2.0)
+        if not state_ok:
+            return False, state_msg
+        tv = None if vel is None else float(vel)
+        ta2 = None if acc is None else float(acc)
+        self._cmd_q.put(("move_joint_async", (*vals, tv, ta2)))
+        speed_text = f", 속도={tv:.0f}%" if tv is not None else ""
+        return True, (
+            f"조인트 비동기 이동 시작: J1={vals[0]:.2f}, J2={vals[1]:.2f}, J3={vals[2]:.2f}, "
             f"J4={vals[3]:.2f}, J5={vals[4]:.2f}, J6={vals[5]:.2f}{speed_text}"
         )
 
@@ -2026,6 +4275,60 @@ class RobotBackend:
         self._cmd_q.put(("gripper_move", target_mm))
         pulse = gripper_distance_mm_to_pulse(target_mm)
         return True, f"그리퍼 이동을 시작합니다. (distance={target_mm:.2f}mm, pulse={pulse})"
+
+    def send_emergency_stop(self):
+        if not self._ready_event.is_set():
+            return False, "백엔드 준비 중입니다."
+        # ServoOff.srv: STOP_TYPE_EMERGENCY == 3
+        ok, msg = self._call_servo_off(stop_type=3, timeout_sec=2.0)
+        if not ok:
+            return False, msg
+        return True, "긴급정지 명령을 전송했습니다."
+
+    def send_motion_stop(self, stop_mode: int = 2):
+        if not self._ready_event.is_set():
+            return False, "백엔드 준비 중입니다."
+        # MoveStop.srv: stop_mode=2(DR_SSTO, Soft Stop)
+        mode = int(stop_mode)
+        op_timeout = 0.35
+        ok_stop, msg_stop = self._call_move_stop(stop_mode=mode, timeout_sec=op_timeout)
+        stop_result_text = f"STOP={'OK' if ok_stop else 'FAIL'} ({msg_stop})"
+
+        # 모드변경의 GET 재확인처럼, stop 이후 상태가 MOVING(2)에서 벗어났는지 확인한다.
+        verify_deadline = time.monotonic() + 2.0
+        verify_ok = False
+        verify_msg = "상태 미확인"
+        while time.monotonic() < verify_deadline:
+            state_code, state_name, seen_at = self.get_robot_state_snapshot()
+            if state_code is None or seen_at is None:
+                verify_msg = "로봇 상태 미수신"
+                time.sleep(0.05)
+                continue
+            age = time.monotonic() - float(seen_at)
+            if age > 1.2:
+                verify_msg = f"로봇 상태 지연({age:.2f}s)"
+                time.sleep(0.05)
+                continue
+            code = int(state_code)
+            name = str(state_name or get_robot_state_name(code))
+            if code != 2:  # STATE_MOVING
+                verify_ok = True
+                verify_msg = f"mode/state 확인: {name}({code})"
+                break
+            verify_msg = f"여전히 MOVING({code})"
+            time.sleep(0.05)
+
+        merged = f"{stop_result_text}; VERIFY={'OK' if verify_ok else 'FAIL'} ({verify_msg})"
+        if verify_ok:
+            if self.robot_controller is not None:
+                self.robot_controller._log_info(f"[정지] {merged}")
+            return True, merged
+
+        # 서비스 응답이 실패/타임아웃이어도 실제 상태가 멈춘 것으로 확인되면 성공 처리한다.
+        # (위 verify_ok에서 이미 처리됨) 여기까지 왔으면 둘 다 실패.
+        if self.robot_controller is not None:
+            self.robot_controller._log_error(f"[정지] {merged}")
+        return False, merged
 
     def is_ready(self):
         return self._ready_event.is_set()
@@ -2088,20 +4391,13 @@ class RobotBackend:
         if not self._started:
             return
 
-        self._stop_event.set()
-        try:
-            self._cmd_q.put_nowait(("quit", None))
-        except queue.Full:
-            pass
-
-        if self._worker_thread is not None:
-            self._worker_thread.join(timeout=2.0)
-
         if self.robot_controller is not None:
+            # 종료 정리(워커 join/노드 파괴) 전에 먼저 그리퍼 종료를 시도해
+            # drl_start 서비스가 살아있는 동안 close 요청이 나가도록 한다.
             try:
                 if rclpy.ok():
-                    self.robot_controller.terminate_gripper()
-                    for _ in range(50):
+                    self.robot_controller.terminate_gripper(best_effort=True)
+                    for _ in range(20):
                         rclpy.spin_once(self.robot_controller, timeout_sec=0.01)
                         rclpy.spin_once(self._dsr_node, timeout_sec=0.01)
                         if self._mode_node is not None:
@@ -2110,6 +4406,31 @@ class RobotBackend:
                     print("ROS 컨텍스트가 이미 종료되어 그리퍼 terminate를 생략합니다.")
             except Exception as e:
                 print(f"그리퍼 terminate 중 예외(종료 과정에서 흔함): {e}")
+
+        # 그리퍼 종료 시도 후에 stop_event를 세팅해야,
+        # background executor spin이 service 응답을 끝까지 처리할 수 있다.
+        self._stop_event.set()
+
+        try:
+            self._bartender_sequence_manager.shutdown()
+        except Exception:
+            pass
+        try:
+            self._stop_bartender_sequence_api_server()
+        except Exception:
+            pass
+        try:
+            self._cmd_q.put_nowait(("quit", None))
+        except queue.Full:
+            pass
+
+        if self._worker_thread is not None:
+            self._worker_thread.join(timeout=2.0)
+
+        try:
+            self._stop_bartender_action_sources()
+        except Exception:
+            pass
 
         try:
             if self.robot_controller is not None:

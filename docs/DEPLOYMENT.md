@@ -75,7 +75,8 @@ source <ros2_ws>/install/setup.bash
 
 현재는:
 
-- [assets/models/best.pt](../assets/models/best.pt)
+- [assets/models/cam_1.pt](../assets/models/cam_1.pt) (비전1)
+- [assets/models/cam_2.pt](../assets/models/cam_2.pt) (비전2)
 
 ## 5. 실행 방법
 
@@ -85,6 +86,11 @@ source <ros2_ws>/install/setup.bash
 cd <repo-root>
 python3 run_bartender.py
 ```
+
+사용자 Web UI를 같이 쓰는 경우:
+
+- 기본 포트: `8000`
+- 활성화 플래그: `VOICE_ORDER_WEBUI_ENABLED=1`
 
 ### 실제 로봇
 
@@ -125,6 +131,11 @@ python3 launch/object_detection_launch.py run_drink_detection:=true
 python3 launch/object_detection_launch.py run_glass_fill_level:=true
 python3 launch/object_detection_launch.py run_drink_detection:=true run_glass_fill_level:=true
 ```
+
+참고:
+
+- 기본 운영에서는 개발자 UI가 필요 시 비전 프로세스를 실행/관리합니다.
+- `object_detection_launch.py`는 수동 점검용으로도 사용할 수 있습니다.
 
 ### 캘리브레이션 프로세스
 

@@ -186,7 +186,7 @@ def draw_checkerboard_overlay(frame, points_dict, grid_points_uv, grid_status, f
 
 class CalibrationProcess(Node):
     def __init__(self, args):
-        super().__init__(f"vision{int(args.panel)}_calibration")
+        super().__init__(f"bartender_vision{int(args.panel)}_calibration")
         self.args = args
         self.cols = max(2, int(args.cols))
         self.rows = max(2, int(args.rows))

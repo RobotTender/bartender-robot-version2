@@ -68,15 +68,15 @@ def generate_launch_description(overrides=None):
     args = [
         DeclareLaunchArgument('enable_depth', default_value='true'),
         DeclareLaunchArgument('enable_color', default_value='true'),
-        DeclareLaunchArgument('enable_sync', default_value='true'),
+        DeclareLaunchArgument('enable_sync', default_value='false'),
         DeclareLaunchArgument('align_depth_enable', default_value='true'),
         DeclareLaunchArgument('run_camera1', default_value='true'),
         DeclareLaunchArgument('run_camera2', default_value='true'),
         DeclareLaunchArgument('camera1_namespace', default_value='camera'),
-        DeclareLaunchArgument('camera1_name', default_value='camera'),
+        DeclareLaunchArgument('camera1_name', default_value='camera_1'),
         DeclareLaunchArgument('camera1_serial_no', default_value=_launch_serial_text(serial_1) or '_313522301601'),
-        DeclareLaunchArgument('camera2_namespace', default_value='camera2'),
-        DeclareLaunchArgument('camera2_name', default_value='camera'),
+        DeclareLaunchArgument('camera2_namespace', default_value='camera'),
+        DeclareLaunchArgument('camera2_name', default_value='camera_2'),
         DeclareLaunchArgument('camera2_serial_no', default_value=_launch_serial_text(serial_2) or '_311322302867'),
     ]
 

@@ -46,8 +46,6 @@
   - `dsr_bringup2`: `1.1.0`
 - `/home/up/ros2_ws/src/od-realsense`
   - detached HEAD: `8574b22`
-- `/home/up/ros2_ws/src/robot-llm-combine`
-  - detached HEAD: `bb00688`
 
 ## 2) 변경사항 요약 (폴더 전체 관점)
 
@@ -125,4 +123,3 @@
 3. 그리퍼 DRL 서비스 타임아웃(기본 25초) 초과 시 초기화 실패로 반환되므로, 네트워크/컨트롤러 상태 먼저 점검.
 4. 비전2 용량(`volume_ml`)은 `bottle`+`liquid(soju/beer)` 동시 감지 조건을 만족해야 계산됨.
 5. VSCode 실행 시에도 ROS 환경 자동 부트스트랩되지만, 별도 venv 사용 시 `rclpy/sensor_msgs` 가시성 충돌 여부 확인 필요.
-

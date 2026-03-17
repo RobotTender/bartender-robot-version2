@@ -10,10 +10,25 @@ import threading
 import time
 import traceback
 import warnings
+import io
+import wave
+import re
+from urllib import error as urllib_error
+from urllib import request as urllib_request
 from datetime import datetime
 
-from PyQt5.QtCore import QTimer, QObject, pyqtSignal, Qt, QThread, QEvent
-from PyQt5.QtGui import QFont, QImage, QPixmap, QBrush, QColor, QDoubleValidator, QPalette, QTransform
+from PyQt5.QtCore import QTimer, QObject, pyqtSignal, pyqtSlot, Qt, QThread, QEvent, QUrl
+from PyQt5.QtGui import (
+    QFont,
+    QImage,
+    QPixmap,
+    QBrush,
+    QColor,
+    QDoubleValidator,
+    QPalette,
+    QTransform,
+    QDesktopServices,
+)
 from PyQt5.QtWidgets import (
     QApplication,
     QMainWindow,
@@ -37,6 +52,7 @@ from PyQt5.QtWidgets import (
     QSlider,
     QFileDialog,
     QSizePolicy,
+    QPlainTextEdit,
 )
 from PyQt5 import uic
 
@@ -81,13 +97,20 @@ try:
 except Exception:
     RCLError = Exception
 import numpy as np
+try:
+    import sounddevice as sd
+except Exception:
+    sd = None
 
 # Project layout root
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.abspath(os.path.join(CURRENT_DIR, "..", ".."))
 BACKEND_DIR = os.path.abspath(os.path.join(CURRENT_DIR, "..", "backend"))
+SRC_DIR = os.path.abspath(os.path.join(CURRENT_DIR, ".."))
 if BACKEND_DIR not in sys.path:
     sys.path.insert(0, BACKEND_DIR)
+if SRC_DIR not in sys.path:
+    sys.path.insert(0, SRC_DIR)
 
 # ROS2 logs to stdout so UI terminal can capture
 os.environ.setdefault("RCUTILS_LOGGING_USE_STDOUT", "1")
@@ -101,11 +124,12 @@ warnings.filterwarnings(
 )
 
 from task_backend_node import RobotBackend, ROBOT_ID, HOME_POSJ
+from order_integration.openai_tts import synthesize_openai_tts
 
 form = uic.loadUiType(os.path.join(PROJECT_ROOT, "assets", "frontend", "developer_frontend.ui"))[0]
 UI_FONT_FAMILY = "Noto Sans CJK KR"
 UI_FONT_SIZE = 9
-UI_TERMINAL_FONT_SIZE = max(6, int(os.environ.get("UI_TERMINAL_FONT_SIZE", "10")))
+UI_TERMINAL_FONT_SIZE = max(6, int(os.environ.get("UI_TERMINAL_FONT_SIZE", "9")))
 UI_TABLE_FONT_SIZE = max(12, int(os.environ.get("UI_TABLE_FONT_SIZE", "12")))
 UI_TABLE_ROW_HEIGHT = max(26, int(os.environ.get("UI_TABLE_ROW_HEIGHT", "30")))
 UI_PANEL_TABLE_ROW_HEIGHT = max(22, int(UI_TABLE_ROW_HEIGHT * 0.875))
@@ -123,14 +147,12 @@ CALIBRATION_FIXED_SPEED_PERCENT = 20.0
 
 UI_ENABLE_VISION = os.environ.get("UI_ENABLE_VISION", "1") == "1"
 YOLO_EXTERNAL_NODE = os.environ.get("YOLO_EXTERNAL_NODE", "1") == "1"
-CALIB_VISION_TOPIC_PRIMARY = os.environ.get("CALIB_VISION_TOPIC", "/camera/camera/color/image_raw")
-CALIB_VISION_TOPIC_FALLBACK = os.environ.get("CALIB_VISION_TOPIC_FALLBACK", "/camera/color/image_raw")
-CALIB_CAMERA_INFO_TOPIC_PRIMARY = os.environ.get("CALIB_CAMERA_INFO_TOPIC", "/camera/camera/color/camera_info")
-CALIB_CAMERA_INFO_TOPIC_FALLBACK = os.environ.get("CALIB_CAMERA_INFO_TOPIC_FALLBACK", "/camera/color/camera_info")
-CALIB_OUTPUT_META_TOPIC_1 = os.environ.get("CALIB_OUTPUT_META_TOPIC_1", "/vision1/calibration/meta")
-CALIB_OUTPUT_META_TOPIC_2 = os.environ.get("CALIB_OUTPUT_META_TOPIC_2", "/vision2/calibration/meta")
-VISION_OBJECT_META_TOPIC_1 = os.environ.get("VISION_OBJECT_META_TOPIC_1", "/vision1/object/meta")
-VISION_VOLUME_META_TOPIC_2 = os.environ.get("VISION_VOLUME_META_TOPIC_2", "/vision2/volume/meta")
+CALIB_VISION_TOPIC_PRIMARY = os.environ.get("CALIB_VISION_TOPIC", "/camera/camera_1/color/image_raw")
+CALIB_CAMERA_INFO_TOPIC_PRIMARY = os.environ.get("CALIB_CAMERA_INFO_TOPIC", "/camera/camera_1/color/camera_info")
+CALIB_OUTPUT_META_TOPIC_1 = os.environ.get("CALIB_OUTPUT_META_TOPIC_1", "/camera/camera_1/calibration/meta")
+CALIB_OUTPUT_META_TOPIC_2 = os.environ.get("CALIB_OUTPUT_META_TOPIC_2", "/camera/camera_2/calibration/meta")
+VISION_OBJECT_META_TOPIC_1 = os.environ.get("VISION_OBJECT_META_TOPIC_1", "/camera/camera_1/detection/object/meta")
+VISION_VOLUME_META_TOPIC_2 = os.environ.get("VISION_VOLUME_META_TOPIC_2", "/camera/camera_2/detection/volume/meta")
 YOLO_AUTO_LAUNCH_NODE = os.environ.get("YOLO_AUTO_LAUNCH_NODE", "1") == "1"
 YOLO_AUTO_LAUNCH_ALWAYS = os.environ.get("YOLO_AUTO_LAUNCH_ALWAYS", "0") == "1"
 YOLO_AUTO_LAUNCH_CMD = os.environ.get("YOLO_AUTO_LAUNCH_CMD", "").strip()
@@ -138,6 +160,10 @@ CALIB_HELPER_AUTO_LAUNCH = os.environ.get("CALIB_HELPER_AUTO_LAUNCH", "0") == "1
 CALIB_HELPER_CMD = os.environ.get("CALIB_HELPER_CMD", "").strip()
 
 POSITION_STALE_SEC = float(os.environ.get("UI_POSITION_STALE_SEC", "2.0"))
+VISION_DECODE_MIN_INTERVAL_MS = max(
+    0.0, float(os.environ.get("VISION_DECODE_MIN_INTERVAL_MS", "40.0"))
+)
+VISION_DECODE_MIN_INTERVAL_SEC = float(VISION_DECODE_MIN_INTERVAL_MS) / 1000.0
 STATE_FLASH_SEC = float(os.environ.get("UI_STATE_FLASH_SEC", "1.2"))
 POSITION_FLASH_SEC = float(os.environ.get("UI_POSITION_FLASH_SEC", "0.9"))
 ROBOT_STARTUP_CONNECT_GRACE_SEC = float(os.environ.get("ROBOT_STARTUP_CONNECT_GRACE_SEC", "20.0"))
@@ -164,10 +190,77 @@ JOINT_INPUT_LIMITS_DEG = (
     (-360.0, 360.0),  # J6
 )
 LOG_AREA_SHIFT_Y = 4
-UI_USE_DESIGN_GEOMETRY = True
+UI_USE_DESIGN_GEOMETRY = os.environ.get("UI_USE_DESIGN_GEOMETRY", "0") == "1"
 MODE_SWITCH_GRACE_SEC = float(os.environ.get("MODE_SWITCH_GRACE_SEC", "4.0"))
+VOICE_ORDER_PANEL_GAP = 10
+DASHBOARD_MARGIN = 12
+DASHBOARD_COL_GAP = 10
+DASHBOARD_ROW_GAP = 10
+DASHBOARD_BOTTOM_MIN_HEIGHT = 220
+DASHBOARD_BOTTOM_EXTRA_MARGIN = 0
+DASHBOARD_COL_WIDTHS = (531, 531, 840)
+DASHBOARD_TOP_PANEL_HEIGHT = 600
+DASHBOARD_BOTTOM_PANEL_HEIGHT = 600
+DASHBOARD_LOG_HEIGHT_RATIO = 0.25
+DASHBOARD_LOG_MIN_HEIGHT = 240
+BARTENDER_SEQUENCE_STEPS = [
+    ("boot", "시스템 준비"),
+    ("mode", "모드 확인"),
+    ("voice_request", "음성 입력 요청"),
+    ("stt", "STT 인식"),
+    ("llm", "LLM 주문 판별"),
+    ("recipe", "레시피 생성"),
+    ("robot_action", "로봇 동작"),
+    ("vision_check", "비전 확인"),
+    ("done", "완료"),
+]
+BARTENDER_SEQUENCE_STEP_LABEL_BY_KEY = {str(key): str(label) for key, label in BARTENDER_SEQUENCE_STEPS}
+BARTENDER_SEQUENCE_STEP_MAX_HEIGHT = 36
+VOICE_MIC_BUTTON_TEXT_START = "마이크 입력 시작"
+VOICE_MIC_BUTTON_TEXT_STOP = "마이크 입력 중지"
+VOICE_ORDER_CUSTOMER_ERROR_TTS_TEXT = "요청 처리에 실패했습니다. 다시 시도해 주세요."
+VOICE_ORDER_CYCLE_INTERVAL_MS = max(
+    1, int(float(os.environ.get("VOICE_ORDER_CYCLE_INTERVAL_MS", "100")))
+)
+VOICE_ORDER_DELAY_WARN_MS = max(
+    300.0, float(os.environ.get("VOICE_ORDER_DELAY_WARN_MS", str(max(600, VOICE_ORDER_CYCLE_INTERVAL_MS * 4))))
+)
+VOICE_ORDER_DISCONNECT_MS = max(
+    VOICE_ORDER_DELAY_WARN_MS + 200.0,
+    float(os.environ.get("VOICE_ORDER_DISCONNECT_MS", str(max(1600, VOICE_ORDER_CYCLE_INTERVAL_MS * 12)))),
+)
+VOICE_ORDER_WEBUI_HOST = (
+    str(
+        os.environ.get(
+            "USER_FRONTEND_HOST",
+            os.environ.get("VOICE_ORDER_WEBUI_HOST", "127.0.0.1"),
+        )
+        or ""
+    ).strip()
+    or "127.0.0.1"
+)
+VOICE_ORDER_WEBUI_PORT = (
+    str(
+        os.environ.get(
+            "USER_FRONTEND_PORT",
+            os.environ.get("VOICE_ORDER_WEBUI_PORT", "8000"),
+        )
+        or ""
+    ).strip()
+    or "8000"
+)
 PARAM_DIR = os.path.join(PROJECT_ROOT, "config")
 PARAM_FILE = os.path.join(PARAM_DIR, "parameter.csv")
+MENU_OFFSET_CONFIG_PATH = os.path.join(PARAM_DIR, "menu_xyz_offsets.json")
+BARTENDER_MENU_LABELS = {
+    "soju": "소주",
+    "beer": "맥주",
+    "somaek": "소맥",
+}
+BARTENDER_INGREDIENT_ALIASES = {
+    "soju": {"soju", "소주"},
+    "beer": {"beer", "맥주"},
+}
 CALIB_DIR = os.path.join(PARAM_DIR, "calibration")
 CALIB_ROBOT_DIR = CALIB_DIR
 CALIB_ROTMAT_DIR = CALIB_DIR
@@ -184,11 +277,18 @@ VISION_META_PROCESS_HZ = float(os.environ.get("VISION_META_PROCESS_HZ", "8.0"))
 VISION_META_STALE_SEC = float(os.environ.get("VISION_META_STALE_SEC", "2.0"))
 VISION_META_HOLD_SEC = float(os.environ.get("VISION_META_HOLD_SEC", "1.5"))
 VISION_RUNTIME_UI_HOLD_SEC = float(os.environ.get("VISION_RUNTIME_UI_HOLD_SEC", "3.0"))
+# 카메라 프레임 수신 지연(stale) 판정 기준(비전 전용)
+VISION_CAMERA_STALE_SEC = max(0.5, float(os.environ.get("VISION_CAMERA_STALE_SEC", "5.0")))
 VISION_RENDER_INTERVAL_MS = max(15, int(float(os.environ.get("VISION_RENDER_INTERVAL_MS", "33"))))
 DEFAULT_VISION1_SERIAL = os.environ.get("DEFAULT_VISION1_SERIAL", "313522301601")
 DEFAULT_VISION2_SERIAL = os.environ.get("DEFAULT_VISION2_SERIAL", "311322302867")
+ROBOT_MODE_HINT = (str(os.environ.get("BARTENDER_ROBOT_MODE_HINT", "real") or "").strip().lower() or "real")
+ROBOT_MODEL_HINT = str(os.environ.get("BARTENDER_ROBOT_MODEL_HINT", "e0509") or "").strip() or "e0509"
+ROBOT_HOST_HINT = str(os.environ.get("BARTENDER_ROBOT_HOST_HINT", "110.120.1.68") or "").strip() or "110.120.1.68"
+ROBOT_RT_HOST_HINT = str(os.environ.get("BARTENDER_ROBOT_RT_HOST_HINT", "192.168.137.50") or "").strip() or "192.168.137.50"
+ROBOT_GZ_HINT = (str(os.environ.get("BARTENDER_ROBOT_GZ_HINT", "false") or "").strip().lower() or "false")
 CALIB_SEQUENCE_ROW_DEFS = [
-    ("home", "홈위치"),
+    ("initial", "초기위치"),
     ("wait1", "대기위치1"),
     ("wait2", "대기위치2"),
     ("p1", "데이터1"),
@@ -203,7 +303,7 @@ CALIB_SEQUENCE_ROW_DEFS = [
     ("p10", "데이터10"),
     ("return1", "복귀위치1"),
     ("return2", "복귀위치2"),
-    ("end_home", "홈위치"),
+    ("end", "끝위치"),
 ]
 
 ROBOT_STATE_KR_MAP = {
@@ -361,11 +461,58 @@ class BackendResetWorker(QObject):
             self.failed.emit(str(e), traceback.format_exc())
 
 
+class BackendMotionStopWorker(QObject):
+    finished = pyqtSignal(bool, str)
+    failed = pyqtSignal(str, str)
+
+    def __init__(self, backend, stop_mode: int = 2):
+        super().__init__()
+        self.backend = backend
+        self.stop_mode = int(stop_mode)
+
+    def run(self):
+        try:
+            ok, msg = self.backend.send_motion_stop(stop_mode=int(self.stop_mode))
+            self.finished.emit(bool(ok), str(msg))
+        except Exception as e:
+            self.failed.emit(str(e), traceback.format_exc())
+
+
+class VoiceOrderCycleWorker(QObject):
+    tick = pyqtSignal(float)
+    finished = pyqtSignal()
+
+    def __init__(self, interval_ms: int):
+        super().__init__()
+        self._interval_sec = max(0.001, float(interval_ms) / 1000.0)
+        self._stop_event = threading.Event()
+
+    @pyqtSlot()
+    def run(self):
+        try:
+            next_ts = time.monotonic()
+            while not self._stop_event.is_set():
+                now = time.monotonic()
+                self.tick.emit(float(now))
+                next_ts += self._interval_sec
+                sleep_sec = max(0.0, next_ts - time.monotonic())
+                if sleep_sec > 0.0:
+                    # Keep short waits so stop requests are observed quickly.
+                    self._stop_event.wait(timeout=min(sleep_sec, 0.05))
+        finally:
+            self.finished.emit()
+
+    @pyqtSlot()
+    def stop(self):
+        self._stop_event.set()
+
+
 class App(QMainWindow, form):
     ros_log_received = pyqtSignal(str)
     ros_image_received = pyqtSignal(QImage)
     calibration_ui_refresh_requested = pyqtSignal()
     vision_runtime_ui_refresh_requested = pyqtSignal(int)
+    voice_order_event_received = pyqtSignal(object)
 
     def __init__(self, backend=None, auto_start_backend=True):
         super().__init__()
@@ -380,6 +527,8 @@ class App(QMainWindow, form):
         self._backend_worker = None
         self._reset_thread = None
         self._reset_worker = None
+        self._motion_stop_thread = None
+        self._motion_stop_worker = None
         self._mode_scan_at = 0.0
         self._mode_text_cached = "판단 중"
         self._table_value_cache = {}
@@ -402,7 +551,121 @@ class App(QMainWindow, form):
         self._top_status_mid_line = None
         self._top_status_state_cache = {}
         self._robot_controls_enabled_cache = None
+        self._dashboard_resize_guard = False
+        self._voice_panel_shift_applied = False
+        self._voice_panel_shift_dx = 0
+        self._voice_panel_layout_rect = None
+        self._voice_order_panel = None
+        self._voice_order_title_label = None
+        self._voice_order_connection_dot = None
+        self._voice_order_connection_label = None
+        self._voice_order_connection_toggle = None
+        self._voice_order_cycle_label = None
+        self._voice_order_status_label = None
+        self._voice_order_input_label = None
+        self._voice_order_input_edit = None
+        self._voice_order_last_input_text = ""
+        self._voice_order_llm_label = None
+        self._voice_order_llm_edit = None
+        self._voice_order_last_llm_text = ""
+        self._voice_order_start_button = None
+        self._voice_order_log_label = None
+        self._voice_order_log_view = None
+        self._voice_order_result_label = None
+        self._voice_order_recipe_view = None
+        self._voice_order_mic_button = None
+        self._voice_order_mic_state_label = None
+        self._voice_order_mic_level_bar = None
+        self._voice_order_mic_test_panel = None
+        self._voice_order_mic_test_title_label = None
+        self._voice_order_mic_test_level_bar = None
+        self._voice_order_mic_test_value_label = None
+        self._voice_order_mic_test_running = False
+        self._voice_order_mic_test_thread = None
+        self._voice_order_mic_test_stop_event = threading.Event()
+        self._voice_order_mic_test_lock = threading.Lock()
+        self._voice_order_mic_test_latest_level = 0
+        self._voice_order_mic_test_error = ""
+        self._voice_order_mic_test_poll_timer = None
+        self._voice_order_mic_test_selected_index = None
+        self._voice_order_mic_test_selected_name = ""
+        self._voice_order_mic_level_timer = None
+        self._voice_order_mic_level_phase = 0.0
+        self._voice_order_mic_level_active = False
+        self._voice_order_mic_level_last_at = 0.0
+        self._voice_order_mic_state_text = "대기"
+        self._voice_order_webui_button = None
+        self._voice_order_html_badge = None
+        self._webui_order_start_enabled_cached = None
+        self._voice_order_cycle_ms = None
+        self._voice_prev_update_at = None
+        self._voice_backend_last_seen_at = None
+        self._voice_backend_poll_ok_at = None
+        self._voice_order_status_text = "비활성화"
+        self._voice_order_status_severity = "warn"
+        self._voice_order_enabled = False
+        self._voice_order_process_state = "대기"
+        self._sensor_launch_proc = None
+        self._sensor_launch_signature = ""
+        self._robot_launch_proc = None
+        self._robot_launch_signature = ""
+        self._voice_cycle_thread = None
+        self._voice_cycle_worker = None
+        self._voice_cycle_worker_token = 0
+        self._voice_worker_thread = None
+        self._voice_worker_proc = None
+        self._voice_worker_token = 0
+        self._voice_worker_done = False
+        self._voice_worker_running = False
+        self._voice_retry_pending_after_tts = False
+        self._voice_sequence_running = False
+        self._voice_sequence_run_id = 0
+        self._bartender_sequence_run_id = 0
+        self._voice_ready_tone_armed = False
+        self._voice_ready_tone_last_at = 0.0
+        self._voice_ready_tone_warmed = False
+        self._voice_last_result = None
+        self._bartender_overview_panel = None
+        self._bartender_overview_rect = None
+        self._bartender_title_label = None
+        self._bartender_mode_group = None
+        self._bartender_manual_mode_button = None
+        self._bartender_auto_mode_button = None
+        self._bartender_settings_box = None
+        self._bartender_offset_button = None
+        self._bartender_speed_title_label = None
+        self._bartender_speed_slider = None
+        self._bartender_speed_value_label = None
+        self._bartender_start_button = None
+        self._bartender_robot_action_test_button = None
+        self._bartender_mode_hint_label = None
+        self._bartender_status_label = None
+        self._bartender_sequence_area = None
+        self._bartender_sequence_widgets = {}
+        self._bartender_sequence_state = {}
+        self._bartender_mode = "manual"
+        self._bartender_auto_ready = False
+        self._bartender_sequence_running = False
+        self._bartender_active_step = ""
+        self._bartender_active_started_at = 0.0
+        self._bartender_manual_step_index = -1
+        self._bartender_safety_last_check_at = 0.0
+        self._bartender_last_safety_reason = ""
+        self._bartender_last_log_id = 0
+        self._bartender_last_tts_signature = ""
+        self._voice_feedback_audio_gen = 0
+        self._bartender_status_lock = False
+        self._menu_xyz_offsets_by_code = {}
+        self._menu_gripper_close_mm_by_code = {}
+        self._menu_label_by_code = dict(BARTENDER_MENU_LABELS)
+        self._motion_speed_percent = int(DEFAULT_MOTION_SPEED_PERCENT)
+        self._motion_speed_slider = None
+        self._motion_speed_title_label = None
+        self._motion_speed_value_label = None
+        self._emergency_stop_button = None
 
+        self._setup_voice_order_panel()
+        self._setup_bartender_overview_panel()
         self._reserve_top_status_space()
         self._setup_top_status_row()
 
@@ -411,9 +674,17 @@ class App(QMainWindow, form):
         self.terminal.document().setMaximumBlockCount(600)
         self.terminal.setFont(QFont(UI_FONT_FAMILY, UI_TERMINAL_FONT_SIZE))
         self.terminal.setStyleSheet(
-            f"font-family: '{UI_FONT_FAMILY}'; font-size: {UI_TERMINAL_FONT_SIZE}pt;"
+            "QPlainTextEdit {"
+            f" font-family: '{UI_FONT_FAMILY}';"
+            f" font-size: {UI_TERMINAL_FONT_SIZE}pt;"
+            " background: #0f172a;"
+            " color: #dbeafe;"
+            " border: 1px solid #334155;"
+            " border-radius: 4px;"
+            " padding: 6px;"
             " selection-background-color: #1f6feb;"
             " selection-color: #ffffff;"
+            " }"
         )
         self._setup_log_controls()
 
@@ -424,10 +695,6 @@ class App(QMainWindow, form):
             float(VISION_MOVE_DEFAULT_OFFSET_Y_MM),
             float(VISION_MOVE_DEFAULT_OFFSET_Z_MM),
         )
-        self._motion_speed_percent = int(DEFAULT_MOTION_SPEED_PERCENT)
-        self._motion_speed_slider = None
-        self._motion_speed_title_label = None
-        self._motion_speed_value_label = None
         self._calibration_mode_enabled = False
         self._calibration_mode_enabled_1 = False
         self._calibration_mode_enabled_2 = False
@@ -491,6 +758,7 @@ class App(QMainWindow, form):
         self.ros_image_received.connect(self._update_yolo_view)
         self.calibration_ui_refresh_requested.connect(self._update_calibration_mode_ui)
         self.vision_runtime_ui_refresh_requested.connect(self._update_vision_runtime_panel_ui)
+        self.voice_order_event_received.connect(self._on_voice_order_worker_event)
         sys.stdout = self._stdout
         sys.stderr = self._stderr
         sys.excepthook = self._handle_exception
@@ -549,7 +817,6 @@ class App(QMainWindow, form):
             lambda: self._safe_ui_tick("vision_render_2", self._drain_pending_vision_frame_2)
         )
         self._vision_render_timer_2.start(VISION_RENDER_INTERVAL_MS)
-
         self._yolo_thread = None
         self._yolo_worker = None
         self._rosout_sub = None
@@ -737,6 +1004,8 @@ class App(QMainWindow, form):
         self._vision_mode_switch_grace_until_2 = 0.0
         self._vision_drop_frames_until_1 = 0.0
         self._vision_drop_frames_until_2 = 0.0
+        self._vision_decode_next_at_1 = 0.0
+        self._vision_decode_next_at_2 = 0.0
         self._last_robot_comm_connected = False
         self._try_load_calibration_matrix_on_startup()
         self._update_calibration_mode_ui()
@@ -776,6 +1045,2898 @@ class App(QMainWindow, form):
         if self._auto_start_backend:
             self._start_backend_async()
 
+    def _shift_main_frames_for_voice_panel(self):
+        # Voice-order panel is part of the main grid layout.
+        self._voice_panel_shift_dx = 0
+        self._voice_panel_shift_applied = True
+
+    def _setup_voice_order_panel(self):
+        self._shift_main_frames_for_voice_panel()
+        panel = getattr(self, "voice_order_panel", None)
+        if panel is None:
+            return
+        self._voice_order_panel = panel
+        self._voice_order_title_label = getattr(self, "voice_order_title_label", None)
+        self._voice_order_connection_dot = getattr(self, "voice_order_connection_dot", None)
+        self._voice_order_connection_label = getattr(self, "voice_order_connection_label", None)
+        self._voice_order_connection_toggle = getattr(self, "voice_order_connection_toggle", None)
+        self._voice_order_cycle_label = getattr(self, "voice_order_cycle_label", None)
+        self._voice_order_status_label = getattr(self, "voice_order_status_label", None)
+        self._voice_order_input_label = getattr(self, "voice_order_input_label", None)
+        self._voice_order_input_edit = getattr(self, "voice_order_input_edit", None)
+        self._voice_order_llm_label = getattr(self, "voice_order_llm_label", None)
+        self._voice_order_llm_edit = getattr(self, "voice_order_llm_edit", None)
+        self._voice_order_mic_button = getattr(self, "voice_order_mic_button", None)
+        self._voice_order_mic_state_label = getattr(self, "voice_order_mic_state_label", None)
+        if self._voice_order_mic_state_label is None:
+            mic_state_label = QLabel(panel)
+            mic_state_label.setObjectName("voice_order_mic_state_label")
+            mic_state_label.setStyleSheet("font-size: 9.2pt; font-weight: 700; color: #1f2937;")
+            mic_state_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+            self._voice_order_mic_state_label = mic_state_label
+        self._voice_order_mic_level_bar = getattr(self, "voice_order_mic_level_bar", None)
+        if self._voice_order_mic_level_bar is None:
+            mic_level_bar = QProgressBar(panel)
+            mic_level_bar.setObjectName("voice_order_mic_level_bar")
+            mic_level_bar.setRange(0, 100)
+            mic_level_bar.setTextVisible(False)
+            mic_level_bar.setValue(0)
+            self._voice_order_mic_level_bar = mic_level_bar
+        if self._voice_order_mic_level_timer is None:
+            timer = QTimer(self)
+            timer.setInterval(90)
+            timer.timeout.connect(self._tick_voice_order_mic_level)
+            self._voice_order_mic_level_timer = timer
+        if self._voice_order_mic_test_poll_timer is None:
+            test_poll = QTimer(self)
+            test_poll.setInterval(90)
+            test_poll.timeout.connect(self._poll_voice_order_mic_test_level)
+            self._voice_order_mic_test_poll_timer = test_poll
+        self._voice_order_mic_test_panel = getattr(self, "voice_order_mic_test_panel", None)
+        if self._voice_order_mic_test_panel is None:
+            test_panel = QFrame(panel)
+            test_panel.setObjectName("voice_order_mic_test_panel")
+            test_panel.setStyleSheet(
+                "QFrame#voice_order_mic_test_panel { background: #f8fafc; border: 1px solid #cbd5e1; border-radius: 4px; }"
+            )
+            self._voice_order_mic_test_panel = test_panel
+        test_panel = self._voice_order_mic_test_panel
+        if self._voice_order_mic_test_title_label is None:
+            test_title = QLabel("마이크 테스트", test_panel)
+            test_title.setStyleSheet("font-size: 7.6pt; font-weight: 700; color: #334155;")
+            test_title.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+            self._voice_order_mic_test_title_label = test_title
+        if self._voice_order_mic_test_level_bar is None:
+            test_bar = QProgressBar(test_panel)
+            test_bar.setRange(0, 100)
+            test_bar.setTextVisible(False)
+            test_bar.setValue(0)
+            test_bar.setStyleSheet(
+                "QProgressBar { border: 1px solid #cbd5e1; border-radius: 2px; background: #e5e7eb; }"
+                "QProgressBar::chunk { background: #94a3b8; border-radius: 2px; }"
+            )
+            self._voice_order_mic_test_level_bar = test_bar
+        if self._voice_order_mic_test_value_label is None:
+            test_value = QLabel("0%", test_panel)
+            test_value.setStyleSheet("font-size: 7.2pt; font-weight: 700; color: #475569;")
+            test_value.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            self._voice_order_mic_test_value_label = test_value
+        for click_widget in (
+            self._voice_order_mic_test_panel,
+            self._voice_order_mic_test_title_label,
+            self._voice_order_mic_test_level_bar,
+            self._voice_order_mic_test_value_label,
+        ):
+            if click_widget is None:
+                continue
+            try:
+                click_widget.setCursor(Qt.PointingHandCursor)
+                click_widget.mousePressEvent = self._on_voice_order_mic_test_clicked
+            except Exception:
+                pass
+        self._voice_order_start_button = getattr(self, "voice_order_start_button", None)
+        self._voice_order_log_label = getattr(self, "voice_order_log_label", None)
+        self._voice_order_log_view = getattr(self, "voice_order_log_view", None)
+        self._voice_order_result_label = getattr(self, "voice_order_result_label", None)
+        self._voice_order_recipe_view = getattr(self, "voice_order_recipe_view", None)
+        self._voice_order_webui_button = getattr(self, "voice_order_webui_button", None)
+        self._voice_order_html_badge = getattr(self, "voice_order_html_badge", None)
+
+        if self._voice_order_connection_toggle is not None:
+            try:
+                self._voice_order_connection_toggle.toggled.disconnect()
+            except Exception:
+                pass
+            self._voice_order_connection_toggle.toggled.connect(self._on_voice_order_connection_toggled)
+        if self._voice_order_mic_button is not None:
+            try:
+                self._voice_order_mic_button.clicked.disconnect()
+            except Exception:
+                pass
+            self._voice_order_mic_button.clicked.connect(self._capture_voice_input_once)
+        if self._voice_order_webui_button is not None:
+            try:
+                self._voice_order_webui_button.clicked.disconnect()
+            except Exception:
+                pass
+            self._voice_order_webui_button.clicked.connect(self._open_voice_order_webui)
+        if self._voice_order_input_edit is not None:
+            self._voice_order_input_edit.setReadOnly(True)
+            self._voice_order_input_edit.setFocusPolicy(Qt.NoFocus)
+        if self._voice_order_llm_edit is not None:
+            self._voice_order_llm_edit.setReadOnly(True)
+            self._voice_order_llm_edit.setFocusPolicy(Qt.NoFocus)
+        # 처리로그는 메인 로그 창으로 통합한다.
+        if self._voice_order_log_label is not None:
+            self._voice_order_log_label.hide()
+        if self._voice_order_log_view is not None:
+            self._voice_order_log_view.setReadOnly(True)
+            self._voice_order_log_view.document().setMaximumBlockCount(700)
+            self._voice_order_log_view.hide()
+        if self._voice_order_recipe_view is not None:
+            self._voice_order_recipe_view.setReadOnly(True)
+
+        self._layout_voice_order_panel()
+        self._refresh_voice_order_webui_badge()
+        self._set_voice_order_connection_state(False)
+        self._set_voice_order_status("비활성화", "warn")
+        self._set_voice_order_mic_state("비활성화", "warn")
+        self._set_voice_order_mic_visual_active(False)
+        self._voice_order_process_state = "대기"
+        self._set_voice_order_result(None)
+        self._update_voice_mic_button_state()
+
+    def _setup_bartender_overview_panel(self):
+        panel = getattr(self, "_bartender_overview_panel", None)
+        if panel is None:
+            panel = QFrame(self.centralwidget)
+            panel.setObjectName("bartender_overview_panel")
+            panel.setFrameShape(QFrame.Box)
+            panel.setFrameShadow(QFrame.Raised)
+            panel.setStyleSheet(
+                "QFrame#bartender_overview_panel { background: #ffffff; border: 1px solid #000000; border-radius: 6px; }"
+            )
+            self._bartender_overview_panel = panel
+
+        title = QLabel("바텐더 로봇", panel)
+        title.setFont(QFont(UI_FONT_FAMILY, 18, QFont.Bold))
+        title.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self._bartender_title_label = title
+
+        manual_btn = QPushButton("메뉴얼모드", panel)
+        auto_btn = QPushButton("오토모드", panel)
+        for btn in (manual_btn, auto_btn):
+            btn.setCheckable(True)
+            btn.setStyleSheet(
+                "QPushButton { background: #edf2f7; color: #1f2937; border: 1px solid #cbd5e1; border-radius: 4px; font-size: 8.8pt; font-weight: 700; }"
+                "QPushButton:checked { background: #1f6feb; color: #ffffff; border-color: #1f6feb; }"
+            )
+
+        mode_group = QButtonGroup(panel)
+        mode_group.setExclusive(True)
+        mode_group.addButton(manual_btn, 0)
+        mode_group.addButton(auto_btn, 1)
+        mode_group.buttonClicked[int].connect(self._on_bartender_mode_button_clicked)
+        self._bartender_mode_group = mode_group
+        self._bartender_manual_mode_button = manual_btn
+        self._bartender_auto_mode_button = auto_btn
+
+        settings_box = QFrame(panel)
+        settings_box.setObjectName("bartender_settings_box")
+        settings_box.setStyleSheet(
+            "QFrame#bartender_settings_box { background: #f8fafc; border: 1px solid #cbd5e1; border-radius: 6px; }"
+        )
+        self._bartender_settings_box = settings_box
+
+        offset_btn = QPushButton("술 종류별 XYZ 오프셋 설정", settings_box)
+        offset_btn.setStyleSheet(
+            "QPushButton { background: #f1f5f9; color: #1f2937; border: 1px solid #cbd5e1; border-radius: 4px; font-size: 8.8pt; font-weight: 700; }"
+            "QPushButton:hover { background: #e2e8f0; }"
+        )
+        offset_btn.clicked.connect(self._open_menu_xyz_offset_dialog)
+        self._bartender_offset_button = offset_btn
+
+        speed_title = QLabel("로봇 시퀀스 속도 (0~100%)", settings_box)
+        speed_title.setStyleSheet("color: #1f3b63; font-size: 8.5pt; font-weight: 700;")
+        speed_title.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self._bartender_speed_title_label = speed_title
+
+        speed_slider = QSlider(Qt.Horizontal, settings_box)
+        speed_slider.setObjectName("bartender_speed_slider")
+        speed_slider.setRange(MOTION_SPEED_MIN_PERCENT, MOTION_SPEED_MAX_PERCENT)
+        speed_slider.setSingleStep(1)
+        speed_slider.setPageStep(10)
+        speed_slider.setTickInterval(10)
+        speed_slider.setTickPosition(QSlider.NoTicks)
+        speed_slider.valueChanged.connect(self._on_bartender_motion_speed_changed)
+        self._bartender_speed_slider = speed_slider
+
+        speed_value = QLabel(settings_box)
+        speed_value.setStyleSheet("color: #1f3b63; font-size: 9pt; font-weight: 700;")
+        speed_value.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self._bartender_speed_value_label = speed_value
+
+        start_btn = QPushButton("메뉴얼 시퀀스 시작", panel)
+        start_btn.setStyleSheet(
+            "QPushButton { background: #166534; color: #ffffff; border: 1px solid #166534; border-radius: 4px; font-size: 9.2pt; font-weight: 800; }"
+            "QPushButton:hover { background: #14532d; }"
+            "QPushButton:disabled { background: #94a3b8; border-color: #94a3b8; color: #f8fafc; }"
+        )
+        start_btn.clicked.connect(self._run_bartender_manual_sequence)
+        self._bartender_start_button = start_btn
+
+        robot_action_test_btn = QPushButton("7. 로봇 동작만 테스트", panel)
+        robot_action_test_btn.setStyleSheet(
+            "QPushButton { background: #0f766e; color: #ffffff; border: 1px solid #0f766e; border-radius: 4px; font-size: 8.8pt; font-weight: 800; }"
+            "QPushButton:hover { background: #115e59; }"
+            "QPushButton:disabled { background: #94a3b8; border-color: #94a3b8; color: #f8fafc; }"
+        )
+        robot_action_test_btn.clicked.connect(self._run_bartender_robot_action_only_sequence)
+        self._bartender_robot_action_test_button = robot_action_test_btn
+
+        status_label = QLabel("상태: 대기", panel)
+        status_label.setStyleSheet("font-size: 10pt; font-weight: 800; color: #1f2937;")
+        status_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self._bartender_status_label = status_label
+
+        hint_label = QLabel(panel)
+        hint_label.setWordWrap(True)
+        hint_label.setStyleSheet("font-size: 8.8pt; font-weight: 600; color: #475569;")
+        hint_label.setAlignment(Qt.AlignLeft | Qt.AlignTop)
+        self._bartender_mode_hint_label = hint_label
+
+        seq_area = QFrame(panel)
+        seq_area.setObjectName("bartender_sequence_area")
+        seq_area.setStyleSheet(
+            "QFrame#bartender_sequence_area { background: #f8fafc; border: 1px solid #cbd5e1; border-radius: 6px; }"
+        )
+        self._bartender_sequence_area = seq_area
+
+        self._bartender_sequence_widgets = {}
+        self._bartender_sequence_state = {}
+        for idx, (step_key, step_label) in enumerate(BARTENDER_SEQUENCE_STEPS, start=1):
+            lbl = QLabel(f"{idx}. {step_label}", seq_area)
+            lbl.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+            lbl.setStyleSheet(
+                "background: #ffffff; border: 1px solid #dbe2ea; border-radius: 4px; color: #334155; font-size: 8.7pt; font-weight: 700;"
+            )
+            self._bartender_sequence_widgets[str(step_key)] = lbl
+            self._bartender_sequence_state[str(step_key)] = "pending"
+
+        if self._bartender_manual_mode_button is not None:
+            self._bartender_manual_mode_button.setChecked(True)
+        self._bartender_mode = "manual"
+        self._bartender_sequence_running = False
+        self._bartender_active_step = ""
+        self._bartender_active_started_at = 0.0
+        self._bartender_manual_step_index = -1
+        self._load_menu_xyz_offsets()
+        self._refresh_menu_xyz_offset_button_text()
+        self._sync_motion_speed_widgets()
+        self._update_bartender_mode_ui()
+        self._layout_bartender_overview_panel()
+        self._refresh_bartender_sequence_styles()
+
+    def _on_bartender_mode_button_clicked(self, mode_id: int):
+        mode = "auto" if int(mode_id) == 1 else "manual"
+        if bool(getattr(self, "_bartender_sequence_running", False)):
+            self._append_voice_order_log("시퀀스 실행 중에는 모드를 변경할 수 없습니다.", level="warning")
+            if self._bartender_mode_group is not None:
+                self._bartender_mode_group.blockSignals(True)
+                if self._bartender_mode == "auto" and self._bartender_auto_mode_button is not None:
+                    self._bartender_auto_mode_button.setChecked(True)
+                if self._bartender_mode == "manual" and self._bartender_manual_mode_button is not None:
+                    self._bartender_manual_mode_button.setChecked(True)
+                self._bartender_mode_group.blockSignals(False)
+            return
+        if mode == self._bartender_mode:
+            self._update_bartender_mode_ui()
+            return
+        self._bartender_mode = mode
+        self._bartender_sequence_running = False
+        self._bartender_manual_step_index = -1
+        self._bartender_last_safety_reason = ""
+        self._bartender_safety_last_check_at = 0.0
+        self._stop_voice_order_feedback_audio("모드 전환")
+        backend = getattr(self, "backend", None)
+        if backend is not None and hasattr(backend, "reset_bartender_sequence"):
+            try:
+                ok_reset, msg_reset, snap_reset = backend.reset_bartender_sequence(reason="모드 변경: 시퀀스 상태 초기화")
+                self._append_voice_order_log(
+                    f"시퀀스 상태 초기화 {'완료' if ok_reset else '실패'}: {msg_reset}",
+                    level=("info" if ok_reset else "warning"),
+                )
+                if isinstance(snap_reset, dict):
+                    self._apply_bartender_sequence_snapshot(snap_reset)
+            except Exception as exc:
+                self._append_voice_order_log(f"시퀀스 상태 초기화 예외: {exc}", level="warning")
+        self._reset_bartender_sequence(log=False)
+        self._voice_last_result = None
+        self._set_voice_order_result(None)
+        self._set_voice_order_llm_text("-")
+        if mode == "auto":
+            # 오토모드에서는 개발자 UI 수동 음성 루트를 중지하고 WEB UI 루트만 사용한다.
+            self._voice_retry_pending_after_tts = False
+            self._stop_voice_order_worker(reason="오토모드 전환: 개발자 수동 음성입력 중지")
+        self._update_bartender_mode_ui()
+        self._update_voice_mic_button_state()
+        self._append_voice_order_log(f"바텐더 시퀀스 모드 변경: {'오토모드' if mode == 'auto' else '메뉴얼모드'}")
+
+    def _is_bartender_auto_ready(self) -> bool:
+        if self.backend is None or (not hasattr(self.backend, "is_ready")):
+            return False
+        try:
+            if not bool(self.backend.is_ready()):
+                return False
+        except Exception:
+            return False
+        top_required = ("vision", "vision2", "robot")
+        for key in top_required:
+            if not bool(self._top_status_enabled.get(key, True)):
+                return False
+            payload = self._top_status_state_cache.get(key, None)
+            if not isinstance(payload, tuple) or len(payload) != 2:
+                return False
+            _state_text, severity = payload
+            if str(severity or "").strip().lower() not in ("normal", "ok", "success"):
+                return False
+        if str(getattr(self, "_voice_order_status_severity", "") or "").strip().lower() not in (
+            "normal",
+            "ok",
+            "success",
+        ):
+            return False
+        return True
+
+    def _update_bartender_mode_ui(self):
+        self._bartender_auto_ready = self._is_bartender_auto_ready()
+        self._apply_device_toggle_lock_by_mode()
+        # manual/auto 동일 조건: 오토모드에서는 WEB UI 보이스 버튼으로 시작만 허용한다.
+        auto_unlock = bool(
+            (str(self._bartender_mode or "").strip().lower() == "auto")
+            and (not bool(getattr(self, "_bartender_sequence_running", False)))
+        )
+        self._set_webui_order_start_enabled(auto_unlock)
+        status_label = getattr(self, "_bartender_status_label", None)
+        hint_label = getattr(self, "_bartender_mode_hint_label", None)
+        start_btn = getattr(self, "_bartender_start_button", None)
+        robot_action_test_btn = getattr(self, "_bartender_robot_action_test_button", None)
+        lock_status = bool(getattr(self, "_bartender_status_lock", False))
+        mode_text = "오토모드" if self._bartender_mode == "auto" else "메뉴얼모드"
+        if bool(self._bartender_sequence_running):
+            self._bartender_status_lock = False
+            if start_btn is not None:
+                start_btn.setEnabled(True)
+                start_btn.setText("시퀀스 중지")
+            if robot_action_test_btn is not None:
+                robot_action_test_btn.setEnabled(False)
+            # 실행 중 상세 문구/단계 표시는 시퀀스 스냅샷 처리(_apply_bartender_sequence_snapshot)에서 단일 소스로 갱신한다.
+            # 여기서 다시 덮어쓰면 문구가 번갈아 깜박이는 현상이 발생한다.
+            return
+        if self._bartender_mode == "manual":
+            if start_btn is not None:
+                start_btn.setEnabled(True)
+                start_btn.setText("메뉴얼 시퀀스 시작")
+            if robot_action_test_btn is not None:
+                robot_action_test_btn.setEnabled(True)
+            if hint_label is not None and (not lock_status):
+                hint_label.setText("메뉴얼모드: 주변장치 상태 확인 없이 개발자 UI에서 동일 시퀀스를 테스트합니다.")
+            if status_label is not None and (not self._bartender_sequence_running) and (not lock_status):
+                status_label.setText(f"상태: {mode_text} 대기")
+                status_label.setStyleSheet("font-size: 10pt; font-weight: 800; color: #1f2937;")
+            return
+
+        if start_btn is not None:
+            start_btn.setEnabled(True)
+            start_btn.setText("오토모드: WEB UI 실행")
+        if robot_action_test_btn is not None:
+            robot_action_test_btn.setEnabled(False)
+        if hint_label is not None and (not lock_status):
+            hint_label.setText("오토모드: WEB UI 보이스 버튼으로 시퀀스를 시작합니다. (메뉴얼과 동일 실행 조건)")
+        if status_label is not None and (not self._bartender_sequence_running) and (not lock_status):
+            status_label.setText("상태: 오토모드 대기 (WEB UI 보이스 버튼 시작)")
+            status_label.setStyleSheet("font-size: 10pt; font-weight: 800; color: #166534;")
+
+    def _apply_device_toggle_lock_by_mode(self):
+        lock = str(getattr(self, "_bartender_mode", "") or "").strip().lower() == "auto"
+        for _k, toggle in getattr(self, "_top_status_toggles", {}).items():
+            if toggle is not None:
+                toggle.setEnabled(not lock)
+        voice_toggle = getattr(self, "_voice_order_connection_toggle", None)
+        if voice_toggle is not None:
+            voice_toggle.setEnabled(not lock)
+
+    def _default_menu_xyz_offsets(self):
+        offsets = {}
+        for menu_code, menu_label in BARTENDER_MENU_LABELS.items():
+            offsets[str(menu_code)] = {
+                "label": str(menu_label),
+                "offset_xyz_mm": [0.0, 0.0, 0.0],
+                "gripper_close_mm": 41.0,
+            }
+        return offsets
+
+    def _menu_codes_for_offset_ui(self):
+        ordered = list(BARTENDER_MENU_LABELS.keys())
+        for code in sorted(self._menu_xyz_offsets_by_code.keys()):
+            if code not in ordered:
+                ordered.append(code)
+        return ordered
+
+    def _load_menu_xyz_offsets(self):
+        defaults = self._default_menu_xyz_offsets()
+        offsets = {}
+        labels = {}
+        for code, payload in defaults.items():
+            xyz = payload.get("offset_xyz_mm", [0.0, 0.0, 0.0])
+            try:
+                offsets[code] = (
+                    float(xyz[0]),
+                    float(xyz[1]),
+                    float(xyz[2]),
+                )
+            except Exception:
+                offsets[code] = (0.0, 0.0, 0.0)
+            labels[code] = str(payload.get("label", code) or code)
+        gripper_map = {
+            code: float(payload.get("gripper_close_mm", 41.0))
+            for code, payload in defaults.items()
+        }
+
+        try:
+            if os.path.isfile(MENU_OFFSET_CONFIG_PATH):
+                with open(MENU_OFFSET_CONFIG_PATH, "r", encoding="utf-8") as fp:
+                    loaded = json.load(fp)
+                menus = loaded.get("menus", loaded) if isinstance(loaded, dict) else {}
+                if isinstance(menus, dict):
+                    for raw_code, raw_payload in menus.items():
+                        code = str(raw_code or "").strip()
+                        if not code:
+                            continue
+                        if isinstance(raw_payload, dict):
+                            label = str(raw_payload.get("label", labels.get(code, code)) or code)
+                            xyz = raw_payload.get("offset_xyz_mm", [0.0, 0.0, 0.0])
+                            gripper_close_mm = raw_payload.get("gripper_close_mm", gripper_map.get(code, 41.0))
+                        else:
+                            label = labels.get(code, code)
+                            xyz = raw_payload
+                            gripper_close_mm = gripper_map.get(code, 41.0)
+                        try:
+                            x = float(xyz[0]) if isinstance(xyz, (list, tuple)) and len(xyz) >= 1 else 0.0
+                            y = float(xyz[1]) if isinstance(xyz, (list, tuple)) and len(xyz) >= 2 else 0.0
+                            z = float(xyz[2]) if isinstance(xyz, (list, tuple)) and len(xyz) >= 3 else 0.0
+                        except Exception:
+                            x, y, z = 0.0, 0.0, 0.0
+                        try:
+                            grip_v = float(gripper_close_mm)
+                            if (not np.isfinite(grip_v)) or grip_v < 0.0:
+                                grip_v = float(gripper_map.get(code, 41.0))
+                        except Exception:
+                            grip_v = float(gripper_map.get(code, 41.0))
+                        if not np.isfinite(np.asarray([x, y, z], dtype=np.float64)).all():
+                            x, y, z = 0.0, 0.0, 0.0
+                        labels[code] = label
+                        offsets[code] = (float(x), float(y), float(z))
+                        gripper_map[code] = float(grip_v)
+        except Exception as exc:
+            self._append_voice_order_log(f"오프셋 설정 로드 실패: {exc}", level="warning")
+
+        self._menu_xyz_offsets_by_code = dict(offsets)
+        self._menu_gripper_close_mm_by_code = dict(gripper_map)
+        self._menu_label_by_code = dict(labels)
+        return dict(self._menu_xyz_offsets_by_code)
+
+    def _save_menu_xyz_offsets(self):
+        payload = {"menus": {}}
+        for code in self._menu_codes_for_offset_ui():
+            xyz = self._menu_xyz_offsets_by_code.get(code, (0.0, 0.0, 0.0))
+            label = str(self._menu_label_by_code.get(code, code) or code)
+            try:
+                grip_mm = float(self._menu_gripper_close_mm_by_code.get(code, 41.0))
+                if (not np.isfinite(grip_mm)) or grip_mm < 0.0:
+                    grip_mm = 41.0
+            except Exception:
+                grip_mm = 41.0
+            payload["menus"][str(code)] = {
+                "label": label,
+                "offset_xyz_mm": [float(xyz[0]), float(xyz[1]), float(xyz[2])],
+                "gripper_close_mm": float(grip_mm),
+            }
+        try:
+            os.makedirs(os.path.dirname(MENU_OFFSET_CONFIG_PATH), exist_ok=True)
+            with open(MENU_OFFSET_CONFIG_PATH, "w", encoding="utf-8") as fp:
+                json.dump(payload, fp, ensure_ascii=False, indent=2)
+            return True, "저장 완료"
+        except Exception as exc:
+            return False, f"저장 실패: {exc}"
+
+    def _refresh_menu_xyz_offset_button_text(self):
+        btn = getattr(self, "_bartender_offset_button", None)
+        if btn is None:
+            return
+        active_count = 0
+        for xyz in self._menu_xyz_offsets_by_code.values():
+            try:
+                if any(abs(float(v)) > 1e-9 for v in xyz):
+                    active_count += 1
+            except Exception:
+                continue
+        btn.setText(f"술 종류별 XYZ 오프셋 설정 ({active_count}개 적용)")
+
+    def _get_menu_xyz_offset(self, menu_code: str):
+        code = str(menu_code or "").strip()
+        xyz = self._menu_xyz_offsets_by_code.get(code, (0.0, 0.0, 0.0))
+        try:
+            return (float(xyz[0]), float(xyz[1]), float(xyz[2]))
+        except Exception:
+            return (0.0, 0.0, 0.0)
+
+    def _get_menu_gripper_close_mm(self, menu_code: str):
+        code = str(menu_code or "").strip()
+        try:
+            value = float(self._menu_gripper_close_mm_by_code.get(code, 41.0))
+            if (not np.isfinite(value)) or value < 0.0:
+                return 41.0
+            return float(value)
+        except Exception:
+            return 41.0
+
+    def _build_menu_offset_payload(self):
+        payload = {"menus": {}}
+        for code in self._menu_codes_for_offset_ui():
+            xyz = self._get_menu_xyz_offset(code)
+            payload["menus"][str(code)] = {
+                "label": str(self._menu_label_by_code.get(code, code) or code),
+                "offset_xyz_mm": [float(xyz[0]), float(xyz[1]), float(xyz[2])],
+                "gripper_close_mm": float(self._get_menu_gripper_close_mm(code)),
+            }
+        return payload
+
+    def _open_menu_xyz_offset_dialog(self):
+        dialog = QDialog(self)
+        dialog.setWindowTitle("술 종류별 XYZ 오프셋 설정")
+        dialog.setModal(True)
+        dialog.resize(640, 340)
+
+        root = QVBoxLayout(dialog)
+        root.setContentsMargins(12, 10, 12, 10)
+        root.setSpacing(8)
+
+        info = QLabel(
+            "비전 좌표를 로봇 좌표계로 변환한 기준값에 메뉴별 XYZ 오프셋(mm)을 더하고,\n"
+            "병 파지 단계에서 사용할 그리퍼 거리(mm)도 메뉴별로 지정합니다.",
+            dialog,
+        )
+        info.setWordWrap(True)
+        info.setStyleSheet("font-size: 9pt; color: #334155;")
+        root.addWidget(info)
+
+        table = QTableWidget(dialog)
+        codes = self._menu_codes_for_offset_ui()
+        table.setColumnCount(6)
+        table.setRowCount(len(codes))
+        table.setHorizontalHeaderLabels(["메뉴코드", "메뉴명", "X(mm)", "Y(mm)", "Z(mm)", "파지(mm)"])
+        table.verticalHeader().setVisible(False)
+        table.setSelectionMode(QTableWidget.NoSelection)
+        table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        for col in (2, 3, 4, 5):
+            table.horizontalHeader().setSectionResizeMode(col, QHeaderView.ResizeToContents)
+
+        for row, code in enumerate(codes):
+            label = str(self._menu_label_by_code.get(code, code) or code)
+            xyz = self._get_menu_xyz_offset(code)
+
+            code_item = QTableWidgetItem(code)
+            code_item.setFlags(code_item.flags() & ~Qt.ItemIsEditable)
+            table.setItem(row, 0, code_item)
+
+            label_item = QTableWidgetItem(label)
+            table.setItem(row, 1, label_item)
+
+            for col, value in enumerate(xyz, start=2):
+                table.setItem(row, col, QTableWidgetItem(f"{float(value):.2f}"))
+            table.setItem(row, 5, QTableWidgetItem(f"{float(self._get_menu_gripper_close_mm(code)):.2f}"))
+
+        root.addWidget(table, 1)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel, Qt.Horizontal, dialog)
+        reset_btn = QPushButton("0으로 초기화", dialog)
+        buttons.addButton(reset_btn, QDialogButtonBox.ActionRole)
+        root.addWidget(buttons)
+
+        def _on_reset():
+            for r in range(table.rowCount()):
+                for c in (2, 3, 4):
+                    item = table.item(r, c)
+                    if item is None:
+                        item = QTableWidgetItem("0.00")
+                        table.setItem(r, c, item)
+                    else:
+                        item.setText("0.00")
+                grip_item = table.item(r, 5)
+                if grip_item is None:
+                    grip_item = QTableWidgetItem("41.00")
+                    table.setItem(r, 5, grip_item)
+                else:
+                    grip_item.setText("41.00")
+
+        def _on_save():
+            new_offsets = {}
+            new_labels = {}
+            new_gripper = {}
+            for r in range(table.rowCount()):
+                code_item = table.item(r, 0)
+                code = str(code_item.text() if code_item is not None else "").strip()
+                if not code:
+                    continue
+                label_item = table.item(r, 1)
+                label = str(label_item.text() if label_item is not None else "").strip() or code
+                vals = []
+                for c in (2, 3, 4):
+                    item = table.item(r, c)
+                    txt = str(item.text() if item is not None else "").strip() or "0"
+                    try:
+                        v = float(txt)
+                    except Exception:
+                        QMessageBox.warning(self, "오프셋 설정", f"{code}의 오프셋 값이 숫자가 아닙니다: {txt}")
+                        return
+                    if not np.isfinite(v):
+                        QMessageBox.warning(self, "오프셋 설정", f"{code}의 오프셋 값이 유효하지 않습니다: {txt}")
+                        return
+                    vals.append(float(v))
+                grip_item = table.item(r, 5)
+                grip_txt = str(grip_item.text() if grip_item is not None else "").strip() or "41"
+                try:
+                    grip_v = float(grip_txt)
+                except Exception:
+                    QMessageBox.warning(self, "오프셋 설정", f"{code}의 파지(mm) 값이 숫자가 아닙니다: {grip_txt}")
+                    return
+                if (not np.isfinite(grip_v)) or grip_v < 0.0:
+                    QMessageBox.warning(self, "오프셋 설정", f"{code}의 파지(mm) 값이 유효하지 않습니다: {grip_txt}")
+                    return
+                new_labels[code] = label
+                new_offsets[code] = (vals[0], vals[1], vals[2])
+                new_gripper[code] = float(grip_v)
+
+            self._menu_label_by_code = dict(new_labels)
+            self._menu_xyz_offsets_by_code = dict(new_offsets)
+            self._menu_gripper_close_mm_by_code = dict(new_gripper)
+            ok, msg = self._save_menu_xyz_offsets()
+            self._refresh_menu_xyz_offset_button_text()
+            if not ok:
+                QMessageBox.warning(self, "오프셋 설정", msg)
+                return
+            self._append_voice_order_log(f"메뉴별 XYZ/파지(mm) 설정 저장: {MENU_OFFSET_CONFIG_PATH}")
+            dialog.accept()
+
+        reset_btn.clicked.connect(_on_reset)
+        buttons.accepted.connect(_on_save)
+        buttons.rejected.connect(dialog.reject)
+
+        dialog.exec_()
+
+    def _pull_bartender_sequence_snapshot(self):
+        backend = getattr(self, "backend", None)
+        if backend is None or (not hasattr(backend, "get_bartender_sequence_snapshot")):
+            return None
+        try:
+            snap = backend.get_bartender_sequence_snapshot()
+        except Exception as exc:
+            self._append_voice_order_log(f"시퀀스 스냅샷 조회 실패: {exc}", level="warning")
+            return None
+        return dict(snap or {}) if isinstance(snap, dict) else None
+
+    def _apply_bartender_sequence_snapshot(self, snapshot: dict):
+        if not isinstance(snapshot, dict):
+            return
+        def _summarize_ui_text(text: str, max_len: int = 34) -> str:
+            raw = str(text or "").strip()
+            if not raw:
+                return "-"
+            short = raw
+            # 로그에 있는 상세 데이터/경로/파라미터는 UI 요약에서 제거
+            for sep in (" | ", "(", "["):
+                if sep in short:
+                    short = short.split(sep, 1)[0].strip()
+            # "A: B" 형태면 A가 상태성 문구일 때 A만 표기
+            if ":" in short:
+                left = short.split(":", 1)[0].strip()
+                if any(k in left for k in ("실패", "오류", "중지", "예외", "타임아웃", "미검출")):
+                    short = left
+            short = short.strip() or raw
+            if len(short) > int(max_len):
+                short = short[: max_len - 1].rstrip() + "…"
+            return short
+
+        running = bool(snapshot.get("running", False))
+        status = str(snapshot.get("status", "") or "").strip().lower()
+        message = str(snapshot.get("message", "") or "").strip()
+        mode = str(snapshot.get("mode", "") or "").strip().lower()
+        run_id = int(snapshot.get("run_id", 0) or 0)
+        req_payload = snapshot.get("request", {})
+        if not isinstance(req_payload, dict):
+            req_payload = {}
+        is_voice_only = bool(req_payload.get("voice_only", False))
+        last_error_step = str(snapshot.get("last_error_step", "") or "").strip()
+        last_error_step_label = str(snapshot.get("last_error_step_label", "") or "").strip()
+        last_error_stage = str(snapshot.get("last_error_stage", "") or "").strip()
+        last_error_message = str(snapshot.get("last_error_message", "") or "").strip()
+        # UI 모드는 사용자가 선택한 값을 단일 진실 소스로 사용한다.
+        # 백엔드 스냅샷의 mode 값으로 UI 선택 상태를 덮어쓰지 않는다.
+
+        prev_active_step = str(getattr(self, "_bartender_active_step", "") or "").strip()
+        active_step_label = ""
+        if is_voice_only:
+            self._voice_sequence_running = bool(running)
+            if running:
+                self._voice_sequence_run_id = int(run_id)
+            elif int(self._voice_sequence_run_id) == int(run_id):
+                self._voice_sequence_run_id = 0
+            active_step = str(snapshot.get("active_step", "") or "").strip().lower()
+            if running and active_step in ("voice_request", "stt"):
+                if active_step == "voice_request":
+                    self._set_voice_order_process_state("입력요청중")
+                    self._set_voice_order_mic_state("입력 요청중", "warn")
+                    self._set_voice_order_mic_visual_active(False)
+                else:
+                    # active_step=stt 는 stt_wait/stt_process/stt 완료를 모두 포함한다.
+                    # 세부 표시는 stage 이벤트에서 처리하므로, 스냅샷 폴링이 상태를 덮어쓰지 않게 유지한다.
+                    pass
+            try:
+                mic_level = int(snapshot.get("voice_mic_level", 0) or 0)
+            except Exception:
+                mic_level = 0
+            self._set_voice_order_mic_level(mic_level)
+            self._update_voice_mic_button_state()
+        else:
+            step_states = snapshot.get("step_states", {})
+            if isinstance(step_states, dict):
+                for key, _label in BARTENDER_SEQUENCE_STEPS:
+                    k = str(key)
+                    if k not in step_states:
+                        continue
+                    self._bartender_sequence_state[k] = str(step_states.get(k, "pending") or "pending").strip().lower()
+            self._bartender_active_step = str(snapshot.get("active_step", "") or "").strip()
+            self._bartender_sequence_running = running
+            if running:
+                self._bartender_sequence_run_id = int(run_id)
+            elif int(getattr(self, "_bartender_sequence_run_id", 0) or 0) == int(run_id):
+                self._bartender_sequence_run_id = 0
+            if running:
+                self._bartender_status_lock = False
+            elif status in ("success", "error", "stopped"):
+                self._bartender_status_lock = True
+            active_step_label = str(
+                BARTENDER_SEQUENCE_STEP_LABEL_BY_KEY.get(self._bartender_active_step, self._bartender_active_step) or ""
+            ).strip()
+            if (not last_error_step_label) and last_error_step:
+                last_error_step_label = str(
+                    BARTENDER_SEQUENCE_STEP_LABEL_BY_KEY.get(last_error_step, last_error_step) or last_error_step
+                ).strip()
+
+            # 시퀀스가 voice_request 단계로 진입하면, 수동 "마이크 입력 시작" 버튼과 동일하게 UI를 맞춘다.
+            if running and self._bartender_active_step == "voice_request" and prev_active_step != "voice_request":
+                self._voice_ready_tone_armed = True
+                self._set_voice_order_process_state("입력요청중")
+                self._set_voice_order_mic_state("입력 요청중", "warn")
+                self._set_voice_order_mic_visual_active(False)
+
+        logs = list(snapshot.get("logs", []) or [])
+        if logs:
+            for row in logs:
+                if not isinstance(row, dict):
+                    continue
+                try:
+                    log_id = int(row.get("id", 0))
+                except Exception:
+                    log_id = 0
+                if log_id <= int(self._bartender_last_log_id):
+                    continue
+                self._bartender_last_log_id = max(int(self._bartender_last_log_id), log_id)
+                level = str(row.get("level", "info") or "info").strip().lower()
+                stage = str(row.get("stage", "sequence") or "sequence").strip()
+                msg = str(row.get("message", "") or "").strip()
+                if msg:
+                    self._append_voice_order_log(f"[{stage}] {msg}", level=level)
+                stage_norm = stage.lower()
+                if stage_norm == "input_request":
+                    if running:
+                        self._voice_ready_tone_armed = True
+                        self._set_voice_order_process_state("입력요청중")
+                        self._set_voice_order_mic_state("입력 요청중", "warn")
+                        self._set_voice_order_mic_visual_active(False)
+                elif stage_norm == "stt_open":
+                    if running and bool(self._voice_ready_tone_armed):
+                        self._voice_ready_tone_armed = False
+                        self._play_voice_order_ready_tone()
+                elif stage_norm == "stt_wait":
+                    if running:
+                        self._set_voice_order_process_state("마이크입력대기")
+                        self._set_voice_order_mic_state("입력중", "ok")
+                        self._set_voice_order_mic_visual_active(True)
+                elif stage_norm == "stt_process":
+                    if running:
+                        self._set_voice_order_process_state("STT 처리중")
+                        self._set_voice_order_mic_state("STT 처리중", "warn")
+                        self._set_voice_order_mic_visual_active(False)
+                elif stage_norm in ("classify", "llm", "recipe"):
+                    if running:
+                        self._set_voice_order_process_state("주문분석중")
+                        self._set_voice_order_mic_state("처리중", "warn")
+                        self._set_voice_order_mic_visual_active(False)
+
+        last_order = snapshot.get("last_order_result", {})
+        if isinstance(last_order, dict) and last_order:
+            merged_result = dict(last_order)
+            run_id = int(snapshot.get("run_id", 0) or 0)
+            latest_input_text = ""
+            for key in ("input_text", "stt_text", "recognized_text", "transcript", "text"):
+                raw_value = merged_result.get(key, None)
+                if raw_value is None:
+                    continue
+                parsed = str(raw_value or "").strip()
+                if parsed:
+                    latest_input_text = parsed
+                    break
+            if latest_input_text:
+                self._set_voice_order_input_text(latest_input_text)
+            self._voice_last_result = merged_result
+            self._set_voice_order_result(merged_result)
+            tts_text = str(merged_result.get("tts_text", "") or "").strip()
+            result_status = str(merged_result.get("status", "") or "").strip().lower()
+            allow_tts_play = True
+            if str(getattr(self, "_bartender_mode", "") or "").strip().lower() == "auto":
+                # 오토모드 음성 출력은 WEB UI 담당. 개발자 UI는 진행/결과 데이터만 표시한다.
+                allow_tts_play = False
+            if tts_text and result_status in ("success", "retry"):
+                public_tts = self._sanitize_customer_tts_text(status=result_status, raw_text=tts_text)
+                tts_sig = f"{run_id}:{result_status}:{public_tts}"
+                if tts_sig != str(getattr(self, "_bartender_last_tts_signature", "")):
+                    self._bartender_last_tts_signature = tts_sig
+                    if allow_tts_play:
+                        if result_status == "retry":
+                            self._voice_retry_pending_after_tts = True
+                            self._play_voice_order_feedback_tone(public_tts)
+                        else:
+                            self._voice_retry_pending_after_tts = False
+                            self._play_voice_order_feedback_tone(public_tts)
+
+        status_label = getattr(self, "_bartender_status_label", None)
+        hint_label = getattr(self, "_bartender_mode_hint_label", None)
+        if (not is_voice_only) and status_label is not None:
+            if status in ("success",):
+                status_label.setText(f"상태: 완료{(' - ' + message) if message else ''}")
+                status_label.setStyleSheet("font-size: 10pt; font-weight: 800; color: #166534;")
+                if hint_label is not None:
+                    hint_label.setText("시퀀스 정상 완료")
+            elif status in ("error",):
+                fail_step_text = str(last_error_step_label or active_step_label or "단계 미확인").strip()
+                fail_reason = str(last_error_message or message or "원인 미확인").strip()
+                fail_reason_short = _summarize_ui_text(fail_reason, max_len=30)
+                status_label.setText(f"상태: 실패({fail_step_text}) - {fail_reason_short}")
+                status_label.setStyleSheet("font-size: 10pt; font-weight: 800; color: #b91c1c;")
+                if hint_label is not None:
+                    fail_stage = str(last_error_stage or "-").strip()
+                    hint_label.setText(f"오류 위치: {fail_step_text} (stage={fail_stage}) | 상세 원인: 로그창 확인")
+            elif status in ("stopping", "stopped"):
+                msg_short = _summarize_ui_text(message, max_len=30) if message else ""
+                status_label.setText(f"상태: 중지{(' - ' + msg_short) if msg_short else ''}")
+                status_label.setStyleSheet("font-size: 10pt; font-weight: 800; color: #b45309;")
+                if hint_label is not None:
+                    hint_label.setText("중지 사유: 로그창 확인")
+            elif running:
+                run_step = str(active_step_label or "단계 확인중").strip()
+                msg_short = _summarize_ui_text(message, max_len=26) if message else ""
+                status_label.setText(f"상태: 실행중({run_step}){(' - ' + msg_short) if msg_short else ''}")
+                status_label.setStyleSheet("font-size: 10pt; font-weight: 800; color: #1d4ed8;")
+                if hint_label is not None:
+                    hint_label.setText(f"현재 진행 단계: {run_step}")
+            elif message and status not in ("", "idle"):
+                status_label.setText(f"상태: {_summarize_ui_text(message, max_len=34)}")
+                status_label.setStyleSheet("font-size: 10pt; font-weight: 800; color: #1f2937;")
+
+        # 시퀀스가 종료된 상태에서는 마이크 상태가 '입력중'으로 남지 않도록 정리한다.
+        if is_voice_only and (not running) and (not bool(getattr(self, "_voice_order_mic_test_running", False))):
+            self._set_voice_order_mic_state("대기", "info")
+            self._set_voice_order_mic_visual_active(False)
+
+    def _severity_is_normal(self, severity: str):
+        return str(severity or "").strip().lower() in ("normal", "ok", "success")
+
+    def _ingredient_aliases_for_code(self, ingredient_code: str):
+        code = str(ingredient_code or "").strip().lower()
+        aliases = set(BARTENDER_INGREDIENT_ALIASES.get(code, set()))
+        aliases.add(code)
+        label = str(self._menu_label_by_code.get(code, "") or "").strip()
+        if label:
+            aliases.add(label.strip().lower())
+        return {a for a in aliases if a}
+
+    def _missing_recipe_ingredients_for_runtime(self):
+        result = self._voice_last_result if isinstance(self._voice_last_result, dict) else {}
+        status = str(result.get("status", "") or "").strip().lower()
+        if status != "success":
+            return []
+        recipe = result.get("recipe", {})
+        if not isinstance(recipe, dict) or (not recipe):
+            return []
+        payload = self._current_vision_meta_payload(panel_index=1)
+        detections = payload.get("detections", []) if isinstance(payload, dict) else []
+        present_classes = set()
+        if isinstance(detections, list):
+            for det in detections:
+                if not isinstance(det, dict):
+                    continue
+                class_name = str(det.get("class_name", "") or "").strip().lower()
+                if class_name:
+                    present_classes.add(class_name)
+        missing = []
+        for key, value in recipe.items():
+            try:
+                amount = float(value)
+            except Exception:
+                amount = 0.0
+            if amount <= 0.0:
+                continue
+            code = str(key or "").strip().lower()
+            if not code:
+                continue
+            aliases = self._ingredient_aliases_for_code(code)
+            if not any(alias in present_classes for alias in aliases):
+                missing.append(code)
+        return missing
+
+    def _detect_bartender_runtime_safety_issue(self):
+        backend = getattr(self, "backend", None)
+        if backend is None:
+            return "백엔드가 준비되지 않았습니다."
+        if hasattr(backend, "is_ready"):
+            try:
+                if not bool(backend.is_ready()):
+                    return "백엔드 연결이 준비되지 않았습니다."
+            except Exception:
+                return "백엔드 상태 확인 실패"
+
+        if hasattr(backend, "get_robot_state_snapshot"):
+            try:
+                state_code, state_name, _seen_at = backend.get_robot_state_snapshot()
+            except Exception:
+                state_code, state_name = None, ""
+            if state_code is not None:
+                try:
+                    code = int(state_code)
+                except Exception:
+                    code = None
+                if code is not None and code in ROBOT_STATE_ERROR_CODES:
+                    name = str(state_name or f"STATE_{code}")
+                    return f"로봇 에러 상태 감지: {name}({code})"
+        return None
+
+    def _stop_bartender_sequence_for_safety(self, reason: str):
+        text = str(reason or "").strip() or "안전정지 조건 발생"
+        if text == str(getattr(self, "_bartender_last_safety_reason", "")):
+            return
+        self._bartender_last_safety_reason = text
+        active = str(getattr(self, "_bartender_active_step", "") or "").strip()
+        if active:
+            self._set_bartender_step_state(active, "error")
+        self._bartender_active_step = ""
+        self._bartender_sequence_running = False
+        self._bartender_manual_step_index = -1
+        self._voice_ready_tone_armed = False
+        self._stop_voice_order_worker(reason=f"안전정지: {text}")
+        if self._bartender_status_label is not None:
+            self._bartender_status_label.setText(f"상태: 안전정지 - {text}")
+            self._bartender_status_label.setStyleSheet("font-size: 10pt; font-weight: 800; color: #b91c1c;")
+        self._bartender_status_lock = True
+        self._append_voice_order_log(f"[안전정지] {text}", level="error")
+
+    def _check_bartender_runtime_safety(self):
+        if not bool(getattr(self, "_bartender_sequence_running", False)):
+            return
+        now = time.monotonic()
+        if (now - float(getattr(self, "_bartender_safety_last_check_at", 0.0))) < 0.25:
+            return
+        self._bartender_safety_last_check_at = now
+        reason = self._detect_bartender_runtime_safety_issue()
+        if reason:
+            self._stop_bartender_sequence_for_safety(reason)
+
+    def _reset_bartender_sequence(self, log: bool = True):
+        self._stop_voice_order_feedback_audio("시퀀스 초기화")
+        for step_key, _step_label in BARTENDER_SEQUENCE_STEPS:
+            self._bartender_sequence_state[str(step_key)] = "pending"
+        self._bartender_active_step = ""
+        self._bartender_active_started_at = 0.0
+        self._bartender_sequence_running = False
+        self._bartender_manual_step_index = -1
+        self._bartender_last_safety_reason = ""
+        self._bartender_safety_last_check_at = 0.0
+        self._bartender_last_log_id = 0
+        self._bartender_status_lock = False
+        self._refresh_bartender_sequence_styles()
+        if log:
+            self._append_voice_order_log("바텐더 시퀀스 상태 초기화")
+
+    def _set_bartender_step_state(self, step_key: str, state: str):
+        key = str(step_key or "").strip()
+        if key not in self._bartender_sequence_state:
+            return
+        self._bartender_sequence_state[key] = str(state or "pending").strip().lower()
+        self._refresh_bartender_sequence_styles()
+
+    def _set_bartender_active_step(self, step_key: str):
+        key = str(step_key or "").strip()
+        if key not in self._bartender_sequence_state:
+            return
+        prev = str(getattr(self, "_bartender_active_step", "") or "").strip()
+        if prev and prev in self._bartender_sequence_state and self._bartender_sequence_state.get(prev) == "active":
+            self._bartender_sequence_state[prev] = "done"
+        self._bartender_active_step = key
+        self._bartender_active_started_at = time.monotonic()
+        self._bartender_sequence_state[key] = "active"
+        self._refresh_bartender_sequence_styles()
+
+    def _run_bartender_manual_sequence(self):
+        backend = getattr(self, "backend", None)
+        if backend is None:
+            self._append_voice_order_log("백엔드가 준비되지 않아 시퀀스를 실행할 수 없습니다.", level="warning")
+            return
+        if not hasattr(backend, "start_bartender_sequence") or not hasattr(backend, "stop_bartender_sequence"):
+            self._append_voice_order_log("백엔드 시퀀스 API를 찾지 못했습니다.", level="error")
+            return
+
+        if bool(self._bartender_sequence_running):
+            ok_stop, msg_stop, _snap = backend.stop_bartender_sequence(reason="개발자 UI 중지 요청")
+            self._append_voice_order_log(f"시퀀스 중지 요청: {msg_stop}", level="warning" if ok_stop else "error")
+            snap_now = self._pull_bartender_sequence_snapshot()
+            if isinstance(snap_now, dict):
+                self._apply_bartender_sequence_snapshot(snap_now)
+            else:
+                self._bartender_sequence_running = False
+            self._update_bartender_mode_ui()
+            return
+
+        # 오토모드 대기에서는 개발자 버튼을 WEB UI 실행 버튼으로 사용한다.
+        if str(self._bartender_mode or "").strip().lower() == "auto":
+            self._open_voice_order_webui()
+            return
+
+        request_payload = {
+            "input_text": str(getattr(self, "_voice_order_last_input_text", "") or "").strip(),
+            "request_stt": (not bool(str(getattr(self, "_voice_order_last_input_text", "") or "").strip())),
+            "allow_llm": True,
+            "execute_robot_action": True,
+            "motion_speed_percent": float(self._motion_speed_for_command()),
+            "menu_offsets": self._build_menu_offset_payload(),
+        }
+        if str(self._bartender_mode or "manual").strip().lower() == "manual":
+            # 메뉴얼 시퀀스 시작 시에도 테스트용 마이크 입력처럼 STT를 새로 요청한다.
+            request_payload["input_text"] = ""
+            request_payload["request_stt"] = True
+            self._voice_order_last_input_text = ""
+            if self._voice_order_input_edit is not None:
+                self._voice_order_input_edit.setPlainText("노트북 마이크 입력 대기중...")
+            self._set_voice_order_llm_text("-")
+            self._set_voice_order_result(None)
+        self._bartender_status_lock = False
+        self._reset_bartender_sequence(log=False)
+        ok_start, msg_start, snap = backend.start_bartender_sequence(
+            mode=str(self._bartender_mode or "manual"),
+            request=request_payload,
+        )
+        if not ok_start:
+            self._append_voice_order_log(f"시퀀스 시작 실패: {msg_start}", level="error")
+            snap_now = self._pull_bartender_sequence_snapshot()
+            if isinstance(snap_now, dict):
+                self._apply_bartender_sequence_snapshot(snap_now)
+            else:
+                self._bartender_sequence_running = False
+                self._refresh_bartender_sequence_styles()
+                self._update_bartender_mode_ui()
+                if self._bartender_status_label is not None:
+                    self._bartender_status_label.setText(f"상태: 시작 실패 - {msg_start}")
+                    self._bartender_status_label.setStyleSheet("font-size: 10pt; font-weight: 800; color: #b91c1c;")
+                if self._bartender_mode_hint_label is not None:
+                    self._bartender_mode_hint_label.setText(f"오류 위치: 시퀀스 시작 요청 | 원인: {msg_start}")
+                self._bartender_status_lock = True
+            return
+        self._append_voice_order_log(f"시퀀스 시작: {msg_start}")
+        self._apply_bartender_sequence_snapshot(dict(snap or {}))
+        self._update_bartender_mode_ui()
+
+    def _run_bartender_robot_action_only_sequence(self):
+        backend = getattr(self, "backend", None)
+        if backend is None:
+            self._append_voice_order_log("백엔드가 준비되지 않아 로봇동작 테스트를 실행할 수 없습니다.", level="warning")
+            return
+        if not hasattr(backend, "start_bartender_sequence") or not hasattr(backend, "stop_bartender_sequence"):
+            self._append_voice_order_log("백엔드 시퀀스 API를 찾지 못했습니다.", level="error")
+            return
+        if bool(self._bartender_sequence_running):
+            self._append_voice_order_log("시퀀스 실행 중에는 로봇동작 단독 테스트를 시작할 수 없습니다.", level="warning")
+            return
+        if str(self._bartender_mode or "").strip().lower() != "manual":
+            self._append_voice_order_log("로봇동작 단독 테스트는 메뉴얼모드에서만 실행할 수 있습니다.", level="warning")
+            return
+
+        result = {
+            "status": "success",
+            "selected_menu": "beer",
+            "selected_menu_label": "맥주",
+            "recipe": {"beer": 200},
+        }
+        menu_name = "맥주(고정 레시피)"
+        reply = QMessageBox.question(
+            self,
+            "로봇동작 단독 테스트",
+            f"메뉴얼모드에서 7번 로봇 동작만 실행합니다.\n선택 메뉴: {menu_name}\n실행하시겠습니까?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
+            return
+
+        request_payload = {
+            "robot_action_only": True,
+            "order_result": result,
+            "request_stt": False,
+            "allow_llm": False,
+            "execute_robot_action": True,
+            "motion_speed_percent": float(self._motion_speed_for_command()),
+            "menu_offsets": self._build_menu_offset_payload(),
+        }
+        self._bartender_status_lock = False
+        self._reset_bartender_sequence(log=False)
+        ok_start, msg_start, snap = backend.start_bartender_sequence(mode="manual", request=request_payload)
+        if not ok_start:
+            self._append_voice_order_log(f"로봇동작 단독 테스트 시작 실패: {msg_start}", level="error")
+            return
+        self._append_voice_order_log(f"로봇동작 단독 테스트 시작: {msg_start}")
+        self._apply_bartender_sequence_snapshot(dict(snap or {}))
+        self._update_bartender_mode_ui()
+
+    def _advance_bartender_manual_sequence(self):
+        if not self._bartender_sequence_running:
+            return
+        steps = [str(key) for key, _ in BARTENDER_SEQUENCE_STEPS]
+        idx = int(self._bartender_manual_step_index) + 1
+        self._bartender_manual_step_index = idx
+        if idx >= len(steps):
+            self._bartender_sequence_running = False
+            self._bartender_active_step = ""
+            if self._bartender_status_label is not None:
+                self._bartender_status_label.setText("상태: 메뉴얼 시퀀스 완료")
+                self._bartender_status_label.setStyleSheet("font-size: 10pt; font-weight: 800; color: #166534;")
+            self._refresh_bartender_sequence_styles()
+            self._append_voice_order_log("바텐더 메뉴얼 시퀀스 완료")
+            return
+
+        key = steps[idx]
+        self._set_bartender_active_step(key)
+        if key == "voice_request":
+            self._capture_voice_input_once()
+
+        delay_ms = {
+            "boot": 600,
+            "mode": 600,
+            "voice_request": 900,
+            "stt": 900,
+            "llm": 900,
+            "recipe": 700,
+            "robot_action": 900,
+            "vision_check": 700,
+            "done": 500,
+        }.get(key, 700)
+        QTimer.singleShot(int(delay_ms), self._advance_bartender_manual_sequence)
+
+    def _layout_bartender_overview_panel(self):
+        panel = getattr(self, "_bartender_overview_panel", None)
+        rect = getattr(self, "_bartender_overview_rect", None)
+        if panel is None or rect is None or len(rect) != 4:
+            return
+        x, y, w, h = rect
+        panel.setGeometry(int(x), int(y), int(w), int(h))
+        panel.raise_()
+
+        margin = 12
+        title_top = 10
+        title_h = 34
+        ctrl_h = 26
+        text_h = 22
+        hint_h = 32
+
+        if self._bartender_title_label is not None:
+            self._bartender_title_label.setGeometry(margin, title_top, max(120, w - (margin * 2)), title_h)
+
+        y0 = title_top + title_h + 8
+        mode_btn_w = max(96, int((w - (margin * 2) - 8) / 2))
+        if self._bartender_manual_mode_button is not None:
+            self._bartender_manual_mode_button.setGeometry(margin, y0, mode_btn_w, ctrl_h)
+        if self._bartender_auto_mode_button is not None:
+            self._bartender_auto_mode_button.setGeometry(margin + mode_btn_w + 8, y0, mode_btn_w, ctrl_h)
+
+        y0 += ctrl_h + 8
+        settings_box = getattr(self, "_bartender_settings_box", None)
+        settings_h = 74
+        if settings_box is not None:
+            settings_box.setGeometry(margin, y0, max(120, w - (margin * 2)), settings_h)
+            inner_margin = 8
+            inner_w = max(120, settings_box.width() - (inner_margin * 2))
+            offset_h = 24
+            if self._bartender_offset_button is not None:
+                self._bartender_offset_button.setGeometry(inner_margin, inner_margin, inner_w, offset_h)
+            row_y = inner_margin + offset_h + 6
+            if self._bartender_speed_title_label is not None:
+                self._bartender_speed_title_label.setGeometry(inner_margin, row_y, 152, 18)
+            slider_x = inner_margin + 156
+            slider_w = max(120, inner_w - 206)
+            if self._bartender_speed_slider is not None:
+                self._bartender_speed_slider.setGeometry(slider_x, row_y, slider_w, 18)
+            if self._bartender_speed_value_label is not None:
+                self._bartender_speed_value_label.setGeometry(
+                    min(settings_box.width() - 42, slider_x + slider_w + 6),
+                    row_y,
+                    36,
+                    18,
+                )
+        y0 += settings_h + 8
+
+        start_h = 34
+        if self._bartender_start_button is not None:
+            self._bartender_start_button.setGeometry(margin, y0, max(120, w - (margin * 2)), start_h)
+
+        y0 += start_h + 8
+        if self._bartender_status_label is not None:
+            self._bartender_status_label.setGeometry(margin, y0, max(120, w - (margin * 2)), text_h)
+        y0 += text_h
+        if self._bartender_mode_hint_label is not None:
+            self._bartender_mode_hint_label.setGeometry(margin, y0, max(120, w - (margin * 2)), hint_h)
+        y0 += hint_h + 6
+
+        seq_area = getattr(self, "_bartender_sequence_area", None)
+        if seq_area is None:
+            return
+        action_btn_h = 30
+        action_btn_gap = 6
+        seq_h = max(120, h - y0 - margin - action_btn_gap - action_btn_h)
+        seq_area.setGeometry(margin, y0, max(120, w - (margin * 2)), seq_h)
+
+        inner_margin = 8
+        step_count = max(1, len(BARTENDER_SEQUENCE_STEPS))
+        step_gap = 6
+        usable_h = max(40, seq_h - (inner_margin * 2) - (step_gap * (step_count - 1)))
+        step_h = min(
+            int(BARTENDER_SEQUENCE_STEP_MAX_HEIGHT),
+            max(22, int(usable_h / step_count)),
+        )
+        py = inner_margin
+        for step_key, _step_label in BARTENDER_SEQUENCE_STEPS:
+            lbl = self._bartender_sequence_widgets.get(str(step_key), None)
+            if lbl is None:
+                continue
+            lbl.setGeometry(inner_margin, py, max(80, seq_area.width() - (inner_margin * 2)), step_h)
+            py += step_h + step_gap
+
+        if self._bartender_robot_action_test_button is not None:
+            btn_y = seq_area.y() + seq_h + action_btn_gap
+            self._bartender_robot_action_test_button.setGeometry(
+                margin, btn_y, max(120, w - (margin * 2)), action_btn_h
+            )
+
+    def _refresh_bartender_sequence_styles(self):
+        if not self._bartender_sequence_widgets:
+            return
+
+        phase = time.monotonic() % 1.0
+        fade = 0.5 * (1.0 + np.sin((2.0 * np.pi * phase) - (np.pi / 2.0)))
+
+        for step_key, _step_label in BARTENDER_SEQUENCE_STEPS:
+            key = str(step_key)
+            lbl = self._bartender_sequence_widgets.get(key, None)
+            if lbl is None:
+                continue
+            state = str(self._bartender_sequence_state.get(key, "pending") or "pending").strip().lower()
+            if state == "done":
+                lbl.setStyleSheet(
+                    "QLabel { background: #dcfce7; border: 1px solid #22c55e; border-radius: 4px; color: #166534; font-size: 8.6pt; font-weight: 900; padding-left: 7px; }"
+                )
+                continue
+            if state == "error":
+                lbl.setStyleSheet(
+                    "QLabel { background: #fee2e2; border: 1px solid #ef4444; border-radius: 4px; color: #991b1b; font-size: 8.6pt; font-weight: 900; padding-left: 7px; }"
+                )
+                continue
+            if state == "active":
+                alpha = int(max(92, min(255, round(104 + (fade * 151)))))
+                lbl.setStyleSheet(
+                    f"QLabel {{ background: rgba(22, 163, 74, {alpha}); border: 1px solid #16a34a; border-radius: 4px; color: #ffffff; font-size: 8.6pt; font-weight: 900; padding-left: 7px; }}"
+                )
+                continue
+            lbl.setStyleSheet(
+                "QLabel { background: #ffffff; border: 1px solid #dbe2ea; border-radius: 4px; color: #334155; font-size: 8.6pt; font-weight: 700; padding-left: 7px; }"
+            )
+
+    def _robot_action_backend_call(self, method_name: str, *args, **kwargs):
+        backend = getattr(self, "backend", None)
+        if backend is None:
+            return False, "backend 없음"
+        fn = getattr(backend, str(method_name or ""), None)
+        if not callable(fn):
+            return False, f"backend 메서드 없음: {method_name}"
+        try:
+            ret = fn(*args, **kwargs)
+        except Exception as exc:
+            return False, f"{method_name} 예외: {exc}"
+        if isinstance(ret, tuple) and len(ret) >= 2:
+            return bool(ret[0]), str(ret[1])
+        return bool(ret), ("완료" if bool(ret) else "실패")
+
+    def _robot_action_call_with_retry(self, method_name: str, *args, timeout_sec: float = 8.0, poll_sec: float = 0.2, **kwargs):
+        deadline = time.monotonic() + max(0.5, float(timeout_sec))
+        last_msg = "실행 실패"
+        while time.monotonic() <= deadline:
+            ok, msg = self._robot_action_backend_call(method_name, *args, **kwargs)
+            text = str(msg or "").strip()
+            if ok:
+                return True, text or "완료"
+            last_msg = text or last_msg
+            if ("현재 작업 중" in last_msg) or ("백엔드 준비 중" in last_msg):
+                time.sleep(max(0.05, float(poll_sec)))
+                continue
+            return False, last_msg
+        return False, f"{method_name} 타임아웃: {last_msg}"
+
+    def _run_robot_action_step_for_order(self):
+        result = self._voice_last_result if isinstance(self._voice_last_result, dict) else {}
+        status = str(result.get("status", "") or "").strip().lower()
+        if status != "success":
+            return False, f"주문 상태가 success가 아닙니다: {status or '-'}"
+        safety_issue = self._detect_bartender_runtime_safety_issue()
+        if safety_issue:
+            return False, f"안전정지 조건: {safety_issue}"
+
+        speed = self._motion_speed_for_command()
+        ok, msg = self._robot_action_call_with_retry(
+            "run_bartender_first_ingredient_action",
+            dict(result),
+            motion_speed_percent=float(speed),
+            timeout_sec=26.0,
+            poll_sec=0.25,
+        )
+        if not ok:
+            return False, str(msg or "백엔드 로봇동작 실패")
+        return True, str(msg or "완료")
+
+    def _update_bartender_sequence_from_voice_event(self, evt_type: str, event: dict):
+        typ = str(evt_type or "").strip().lower()
+        if typ == "stage":
+            stage = str(event.get("stage", "") or "").strip().lower()
+            if stage in ("input_request",):
+                self._set_bartender_active_step("voice_request")
+            elif stage in ("stt_wait", "stt_process", "stt"):
+                self._set_bartender_active_step("stt")
+            elif stage in ("classify", "llm"):
+                self._set_bartender_active_step("llm")
+            elif stage in ("recipe",):
+                self._set_bartender_active_step("recipe")
+            return
+        if typ == "result":
+            self._set_bartender_active_step("robot_action")
+            return
+        if typ == "done":
+            ok = bool(event.get("ok", False))
+            if not ok:
+                if self._bartender_active_step:
+                    self._set_bartender_step_state(self._bartender_active_step, "error")
+                if self._bartender_status_label is not None:
+                    self._bartender_status_label.setText("상태: 시퀀스 실패")
+                    self._bartender_status_label.setStyleSheet("font-size: 10pt; font-weight: 800; color: #b91c1c;")
+                return
+            action_ok, action_msg = self._run_robot_action_step_for_order()
+            if not action_ok:
+                self._set_bartender_step_state("robot_action", "error")
+                self._bartender_active_step = ""
+                self._bartender_sequence_running = False
+                if self._bartender_status_label is not None:
+                    self._bartender_status_label.setText("상태: 시퀀스 실패(로봇동작)")
+                    self._bartender_status_label.setStyleSheet("font-size: 10pt; font-weight: 800; color: #b91c1c;")
+                self._append_voice_order_log(f"로봇동작 단계 실패: {action_msg}", level="error")
+                self._refresh_bartender_sequence_styles()
+                return
+
+            self._append_voice_order_log(f"로봇동작 단계 완료: {action_msg}")
+            self._set_bartender_step_state("robot_action", "done")
+            self._set_bartender_active_step("vision_check")
+            self._set_bartender_step_state("vision_check", "done")
+            self._set_bartender_active_step("done")
+            self._set_bartender_step_state("done", "done")
+            self._bartender_active_step = ""
+            self._bartender_sequence_running = False
+            if self._bartender_status_label is not None:
+                self._bartender_status_label.setText("상태: 시퀀스 완료")
+                self._bartender_status_label.setStyleSheet("font-size: 10pt; font-weight: 800; color: #166534;")
+            self._refresh_bartender_sequence_styles()
+
+    def _layout_voice_order_panel(self):
+        frame_l = getattr(self, "frame", None)
+        panel = getattr(self, "_voice_order_panel", None)
+        if frame_l is None or panel is None:
+            return
+        panel_rect = getattr(self, "_voice_panel_layout_rect", None)
+        if panel_rect is not None and len(panel_rect) == 4:
+            x, y, w, h = panel_rect
+            panel.setGeometry(int(x), int(y), int(w), int(h))
+        else:
+            width = int(frame_l.width())
+            x = max(10, int(frame_l.x()) - width - VOICE_ORDER_PANEL_GAP)
+            panel.setGeometry(x, int(frame_l.y()), width, int(frame_l.height()))
+        self._layout_voice_order_panel_widgets()
+        panel.raise_()
+
+    def _layout_voice_order_panel_widgets(self):
+        panel = getattr(self, "_voice_order_panel", None)
+        if panel is None:
+            return
+        w = int(panel.width())
+        h = int(panel.height())
+        margin = 10
+        content_w = max(80, w - (margin * 2))
+
+        y = 10
+        if self._voice_order_connection_toggle is not None:
+            self._voice_order_connection_toggle.setGeometry(margin, y, 71, 20)
+        mic_test_w = 168
+        mic_test_h = 34
+        mic_test_x = max(margin, w - margin - mic_test_w)
+        if self._voice_order_cycle_label is not None:
+            self._voice_order_cycle_label.setGeometry(max(margin, w - margin - 168), y, 168, 16)
+        y += 26
+        if self._voice_order_connection_dot is not None:
+            self._voice_order_connection_dot.setGeometry(0, y, 41, 41)
+        right_reserved = (mic_test_w + 8) if self._voice_order_mic_test_panel is not None else 0
+        if self._voice_order_connection_label is not None:
+            self._voice_order_connection_label.setGeometry(50, max(0, y - 10), max(120, content_w - 170 - right_reserved), 61)
+        if self._voice_order_mic_test_panel is not None:
+            self._voice_order_mic_test_panel.setGeometry(mic_test_x, y + 18, mic_test_w, mic_test_h)
+            if self._voice_order_mic_test_title_label is not None:
+                self._voice_order_mic_test_title_label.setGeometry(6, 2, 98, 12)
+            if self._voice_order_mic_test_value_label is not None:
+                self._voice_order_mic_test_value_label.setGeometry(mic_test_w - 52, 2, 46, 12)
+            if self._voice_order_mic_test_level_bar is not None:
+                self._voice_order_mic_test_level_bar.setGeometry(6, 17, mic_test_w - 12, 10)
+        y += 54
+        if self._voice_order_input_label is not None:
+            self._voice_order_input_label.setGeometry(margin, y, content_w, 20)
+        y += 22
+
+        input_h = max(62, int(h * 0.13))
+        if self._voice_order_input_edit is not None:
+            self._voice_order_input_edit.setGeometry(margin, y, content_w, input_h)
+        y += input_h + 8
+
+        if self._voice_order_llm_label is not None:
+            self._voice_order_llm_label.setGeometry(margin, y, content_w, 20)
+        y += 22
+
+        llm_h = max(54, int(h * 0.10))
+        if self._voice_order_llm_edit is not None:
+            self._voice_order_llm_edit.setGeometry(margin, y, content_w, llm_h)
+        y += llm_h + 8
+
+        mic_h = 28
+        if self._voice_order_mic_button is not None:
+            self._voice_order_mic_button.setGeometry(margin, y, content_w, mic_h)
+        y += mic_h + 6
+
+        if self._voice_order_mic_state_label is not None:
+            self._voice_order_mic_state_label.setGeometry(margin, y, content_w, 18)
+        y += 22
+        if self._voice_order_mic_level_bar is not None:
+            self._voice_order_mic_level_bar.setGeometry(margin, y, content_w, 8)
+        y += 14
+
+        if self._voice_order_result_label is not None:
+            self._voice_order_result_label.setGeometry(margin, y, content_w, 20)
+        y += 22
+
+        footer_reserved = 24 + 6 + 24 + 8
+        recipe_h = int(max(72, h - y - footer_reserved))
+        if self._voice_order_recipe_view is not None:
+            self._voice_order_recipe_view.setGeometry(margin, y, content_w, recipe_h)
+        y += recipe_h + 6
+
+        if self._voice_order_webui_button is not None:
+            self._voice_order_webui_button.setGeometry(margin, y, content_w, 24)
+        y += 30
+
+        if self._voice_order_html_badge is not None:
+            self._voice_order_html_badge.setGeometry(margin, y, content_w, 24)
+
+    def _set_voice_order_connection_state(self, connected: bool):
+        on = bool(connected)
+        self._voice_order_enabled = bool(on)
+        label = getattr(self, "_voice_order_connection_label", None)
+        dot = getattr(self, "_voice_order_connection_dot", None)
+        toggle = getattr(self, "_voice_order_connection_toggle", None)
+        if toggle is not None:
+            toggle.blockSignals(True)
+            toggle.setChecked(on)
+            toggle.setText("ON" if on else "OFF")
+            toggle.blockSignals(False)
+        if on:
+            self._start_voice_cycle_worker()
+            self._set_voice_order_status("연결중", "warn")
+            self._set_voice_order_mic_state("대기", "info")
+        else:
+            self._stop_voice_order_mic_test_monitor("음성주문 연결 OFF")
+            self._stop_voice_cycle_worker(reason="음성주문 연결 OFF")
+            self._voice_order_cycle_ms = None
+            self._voice_prev_update_at = None
+            self._voice_backend_last_seen_at = None
+            self._voice_backend_poll_ok_at = None
+            self._voice_order_process_state = "대기"
+            self._set_voice_order_mic_state("비활성화", "warn")
+            self._set_voice_order_mic_visual_active(False)
+        if label is not None and dot is not None:
+            self._set_voice_order_status("연결중" if on else "비활성화", "warn" if on else "warn")
+        self._update_voice_mic_button_state()
+
+    def _on_voice_order_connection_toggled(self, checked: bool):
+        if str(getattr(self, "_bartender_mode", "") or "").strip().lower() == "auto":
+            toggle = getattr(self, "_voice_order_connection_toggle", None)
+            if toggle is not None:
+                toggle.blockSignals(True)
+                toggle.setChecked(bool(self._voice_order_enabled))
+                toggle.setText("ON" if bool(self._voice_order_enabled) else "OFF")
+                toggle.blockSignals(False)
+            self._append_voice_order_log("오토모드에서는 음성주문 ON/OFF를 변경할 수 없습니다.", level="warning")
+            return
+        on = bool(checked)
+        self._voice_order_enabled = bool(on)
+        self._set_voice_order_connection_state(on)
+        if on:
+            self._set_voice_order_status("연결중", "warn")
+        else:
+            self._voice_order_cycle_ms = None
+            self._voice_prev_update_at = None
+            self._voice_backend_last_seen_at = None
+            self._voice_backend_poll_ok_at = None
+            self._set_voice_order_status("비활성화", "warn")
+            self._stop_voice_order_worker(reason="음성주문 연결 OFF")
+            self._voice_order_process_state = "대기"
+            self._set_voice_order_mic_state("비활성화", "warn")
+            self._set_voice_order_result(self._voice_last_result)
+        self._update_voice_mic_button_state()
+        self._update_cycle_time_labels()
+        try:
+            self._save_vision_serial_settings()
+        except Exception:
+            pass
+
+    def _is_voice_order_worker_running(self) -> bool:
+        if bool(getattr(self, "_voice_sequence_running", False)):
+            return True
+        if bool(self._voice_worker_running):
+            return True
+        th = getattr(self, "_voice_worker_thread", None)
+        if th is None:
+            return False
+        try:
+            return bool(th.is_alive()) and (not bool(self._voice_worker_done))
+        except Exception:
+            return False
+
+    def _update_voice_mic_button_state(self):
+        btn = getattr(self, "_voice_order_mic_button", None)
+        if btn is None:
+            return
+        if str(getattr(self, "_bartender_mode", "") or "").strip().lower() == "auto":
+            btn.setEnabled(False)
+            btn.setText(VOICE_MIC_BUTTON_TEXT_START)
+            return
+        toggle = getattr(self, "_voice_order_connection_toggle", None)
+        on = bool(toggle.isChecked()) if toggle is not None else True
+        running = self._is_voice_order_worker_running()
+        if not on:
+            btn.setEnabled(False)
+            btn.setText(VOICE_MIC_BUTTON_TEXT_START)
+            return
+        btn.setEnabled(True)
+        btn.setText(VOICE_MIC_BUTTON_TEXT_STOP if running else VOICE_MIC_BUTTON_TEXT_START)
+
+    def _stop_voice_order_feedback_audio(self, reason: str = ""):
+        try:
+            self._voice_feedback_audio_gen = int(getattr(self, "_voice_feedback_audio_gen", 0) or 0) + 1
+        except Exception:
+            self._voice_feedback_audio_gen = 1
+        if sd is not None:
+            try:
+                sd.stop()
+            except Exception:
+                pass
+        if reason:
+            self._append_voice_order_log(f"TTS 재생 중지: {reason}", level="warning")
+
+    def _set_voice_order_mic_state(self, state_text: str, severity: str = "info"):
+        label = getattr(self, "_voice_order_mic_state_label", None)
+        if label is None:
+            return
+        text = str(state_text or "").strip() or "대기"
+        sev = str(severity or "info").strip().lower()
+        self._voice_order_mic_state_text = text
+        if sev in ("error", "fail", "failed"):
+            color = "#b91c1c"
+        elif sev in ("warn", "warning"):
+            color = "#b45309"
+        elif sev in ("ok", "success"):
+            color = "#166534"
+        else:
+            color = "#1f2937"
+        label.setText(f"마이크 상태: {text}")
+        label.setStyleSheet(f"font-size: 9.2pt; font-weight: 700; color: {color};")
+
+    def _set_voice_order_mic_visual_active(self, active: bool):
+        bar = getattr(self, "_voice_order_mic_level_bar", None)
+        timer = getattr(self, "_voice_order_mic_level_timer", None)
+        if bar is None:
+            return
+        on = bool(active)
+        self._voice_order_mic_level_active = on
+        if not on:
+            self._voice_order_mic_level_phase = 0.0
+            self._voice_order_mic_level_last_at = 0.0
+            if timer is not None:
+                try:
+                    timer.stop()
+                except Exception:
+                    pass
+            bar.setValue(0)
+            self._set_voice_order_mic_test_level(0)
+            bar.setStyleSheet(
+                "QProgressBar { border: 1px solid #cbd5e1; border-radius: 3px; background: #e5e7eb; }"
+                "QProgressBar::chunk { background: #94a3b8; border-radius: 3px; }"
+            )
+            test_bar = getattr(self, "_voice_order_mic_test_level_bar", None)
+            if test_bar is not None:
+                test_bar.setStyleSheet(
+                    "QProgressBar { border: 1px solid #cbd5e1; border-radius: 2px; background: #e5e7eb; }"
+                    "QProgressBar::chunk { background: #94a3b8; border-radius: 2px; }"
+                )
+            return
+        bar.setStyleSheet(
+            "QProgressBar { border: 1px solid #86efac; border-radius: 3px; background: #ecfdf5; }"
+            "QProgressBar::chunk { background: #16a34a; border-radius: 3px; }"
+        )
+        test_bar = getattr(self, "_voice_order_mic_test_level_bar", None)
+        if test_bar is not None:
+            test_bar.setStyleSheet(
+                "QProgressBar { border: 1px solid #86efac; border-radius: 2px; background: #ecfdf5; }"
+                "QProgressBar::chunk { background: #16a34a; border-radius: 2px; }"
+            )
+        if timer is not None:
+            try:
+                if not timer.isActive():
+                    timer.start()
+            except Exception:
+                pass
+        if int(bar.value()) <= 0:
+            bar.setValue(5)
+
+    def _set_voice_order_mic_level(self, level):
+        bar = getattr(self, "_voice_order_mic_level_bar", None)
+        if bar is None:
+            return
+        if not bool(getattr(self, "_voice_order_mic_level_active", False)):
+            return
+        try:
+            value = int(max(0, min(100, round(float(level)))))
+        except Exception:
+            value = 0
+        self._voice_order_mic_level_last_at = time.monotonic()
+        bar.setValue(value)
+        self._set_voice_order_mic_test_level(value)
+
+    def _set_voice_order_mic_test_level(self, value: int):
+        try:
+            v = int(max(0, min(100, int(value))))
+        except Exception:
+            v = 0
+        test_bar = getattr(self, "_voice_order_mic_test_level_bar", None)
+        if test_bar is not None:
+            test_bar.setValue(v)
+        test_value = getattr(self, "_voice_order_mic_test_value_label", None)
+        if test_value is not None:
+            test_value.setText(f"{int(v)}%")
+
+    def _on_voice_order_mic_test_clicked(self, event):
+        self._toggle_voice_order_mic_test_monitor()
+        if event is not None:
+            try:
+                event.accept()
+            except Exception:
+                pass
+
+    def _toggle_voice_order_mic_test_monitor(self):
+        if bool(getattr(self, "_voice_order_mic_test_running", False)):
+            self._stop_voice_order_mic_test_monitor("사용자 테스트 중지")
+        else:
+            self._start_voice_order_mic_test_monitor()
+
+    def _start_voice_order_mic_test_monitor(self):
+        if bool(getattr(self, "_voice_order_mic_test_running", False)):
+            return
+        self._voice_order_mic_test_stop_event.clear()
+        with self._voice_order_mic_test_lock:
+            self._voice_order_mic_test_latest_level = 0
+            self._voice_order_mic_test_error = ""
+        self._voice_order_mic_test_selected_index = None
+        self._voice_order_mic_test_selected_name = ""
+        self._voice_order_mic_test_running = True
+        title = getattr(self, "_voice_order_mic_test_title_label", None)
+        if title is not None:
+            title.setText("마이크 테스트(ON)")
+        self._set_voice_order_mic_visual_active(True)
+        self._set_voice_order_mic_state("테스트중", "warn")
+        test_poll = getattr(self, "_voice_order_mic_test_poll_timer", None)
+        if test_poll is not None and (not test_poll.isActive()):
+            test_poll.start()
+        self._append_voice_order_log("[mic_test] 시작")
+        th = threading.Thread(target=self._run_voice_order_mic_test_monitor, daemon=True, name="voice-mic-test-monitor")
+        self._voice_order_mic_test_thread = th
+        th.start()
+
+    def _stop_voice_order_mic_test_monitor(self, reason: str = ""):
+        if not bool(getattr(self, "_voice_order_mic_test_running", False)):
+            return
+        self._voice_order_mic_test_running = False
+        self._voice_order_mic_test_stop_event.set()
+        th = getattr(self, "_voice_order_mic_test_thread", None)
+        if th is not None:
+            try:
+                th.join(timeout=0.6)
+            except Exception:
+                pass
+        self._voice_order_mic_test_thread = None
+        test_poll = getattr(self, "_voice_order_mic_test_poll_timer", None)
+        if test_poll is not None:
+            try:
+                test_poll.stop()
+            except Exception:
+                pass
+        with self._voice_order_mic_test_lock:
+            self._voice_order_mic_test_latest_level = 0
+        self._set_voice_order_mic_test_level(0)
+        title = getattr(self, "_voice_order_mic_test_title_label", None)
+        if title is not None:
+            title.setText("마이크 테스트")
+        if not self._is_voice_order_worker_running():
+            self._set_voice_order_mic_visual_active(False)
+            self._set_voice_order_mic_state("대기", "info")
+        if reason:
+            self._append_voice_order_log(f"[mic_test] 중지: {reason}")
+
+    def _poll_voice_order_mic_test_level(self):
+        if not bool(getattr(self, "_voice_order_mic_test_running", False)):
+            return
+        with self._voice_order_mic_test_lock:
+            level = int(self._voice_order_mic_test_latest_level)
+            err = str(self._voice_order_mic_test_error or "").strip()
+            self._voice_order_mic_test_error = ""
+        self._set_voice_order_mic_level(level)
+        if err:
+            self._append_voice_order_log(f"[mic_test] 오류: {err}", level="error")
+            self._stop_voice_order_mic_test_monitor("장치 오류")
+
+    def _run_voice_order_mic_test_monitor(self):
+        try:
+            import speech_recognition as sr
+        except Exception as exc:
+            with self._voice_order_mic_test_lock:
+                self._voice_order_mic_test_error = f"speech_recognition 미설치: {exc}"
+            return
+        rec = sr.Recognizer()
+        try:
+            mic_names = list(sr.Microphone.list_microphone_names() or [])
+        except Exception:
+            mic_names = []
+        # STT 워커와 동일한 우선순위로 장치를 선택해 테스트/실운영 경로의 불일치를 줄인다.
+        dev_index = None
+        dev_name = "default"
+        raw_index = str(os.environ.get("VOICE_ORDER_MIC_DEVICE_INDEX", "") or "").strip()
+        if raw_index:
+            try:
+                parsed = int(raw_index)
+                if 0 <= parsed < len(mic_names):
+                    dev_index = int(parsed)
+                    dev_name = f"index:{dev_index}"
+            except Exception:
+                dev_index = None
+        if dev_index is None:
+            hint = str(os.environ.get("VOICE_ORDER_MIC_DEVICE_HINT", "") or "").strip().lower()
+            if hint:
+                for idx, name in enumerate(mic_names):
+                    if hint in str(name or "").lower():
+                        dev_index = int(idx)
+                        dev_name = str(name or f"index:{idx}")
+                        break
+        if dev_index is None:
+            auto_scan = str(os.environ.get("VOICE_ORDER_MIC_AUTO_SCAN", "0") or "").strip().lower() in (
+                "1",
+                "true",
+                "yes",
+                "on",
+            )
+            if auto_scan:
+                for token in ("pipewire", "pulse", "usb", "mic", "default"):
+                    matched = False
+                    for idx, name in enumerate(mic_names):
+                        if token in str(name or "").lower():
+                            dev_index = int(idx)
+                            dev_name = str(name or f"index:{idx}")
+                            matched = True
+                            break
+                    if matched:
+                        break
+        level_gate = int(max(0.0, min(60.0, float(os.environ.get("VOICE_ORDER_MIC_LEVEL_GATE", "2") or "2"))))
+        level_ref = max(400.0, float(os.environ.get("VOICE_ORDER_MIC_LEVEL_REF", "3000") or "3000"))
+        try:
+            self._append_voice_order_log(
+                f"[mic_test] 장치 선택: index={dev_index if dev_index is not None else 'default'}, name={dev_name}"
+            )
+            # 진단용 선택값만 보관한다. STT 경로의 장치 환경변수는 변경하지 않는다.
+            self._voice_order_mic_test_selected_index = dev_index
+            self._voice_order_mic_test_selected_name = str(dev_name or "")
+            with sr.Microphone(device_index=dev_index) as source:
+                try:
+                    rec.adjust_for_ambient_noise(source, duration=0.12)
+                except Exception:
+                    pass
+                while not self._voice_order_mic_test_stop_event.is_set():
+                    chunk = source.stream.read(source.CHUNK)
+                    if not isinstance(chunk, (bytes, bytearray)) or len(chunk) <= 0:
+                        level = 0
+                    else:
+                        samples = np.frombuffer(bytes(chunk), dtype=np.int16)
+                        if samples.size <= 0:
+                            rms = 0.0
+                        else:
+                            rms = float(np.sqrt(np.mean(np.square(samples.astype(np.float32)))))
+                        if rms <= 0.0:
+                            level = 0
+                        else:
+                            normalized = min(1.0, float(rms) / float(level_ref))
+                            level = int(max(0, min(100, round((normalized ** 0.65) * 100.0))))
+                    if int(level) < int(level_gate):
+                        level = 0
+                    with self._voice_order_mic_test_lock:
+                        self._voice_order_mic_test_latest_level = int(level)
+                    time.sleep(0.06)
+        except Exception as exc:
+            with self._voice_order_mic_test_lock:
+                self._voice_order_mic_test_error = str(exc)
+
+    def _tick_voice_order_mic_level(self):
+        bar = getattr(self, "_voice_order_mic_level_bar", None)
+        if bar is None:
+            return
+        if not bool(getattr(self, "_voice_order_mic_level_active", False)):
+            bar.setValue(0)
+            return
+        now = time.monotonic()
+        last_at = float(getattr(self, "_voice_order_mic_level_last_at", 0.0) or 0.0)
+        if last_at <= 0.0:
+            return
+        if (now - last_at) <= 0.22:
+            return
+        current = int(bar.value())
+        if current <= 0:
+            return
+        decayed = max(0, current - 9)
+        bar.setValue(decayed)
+        self._set_voice_order_mic_test_level(decayed)
+
+    def _set_voice_order_input_text(self, text: str):
+        view = getattr(self, "_voice_order_input_edit", None)
+        if view is None:
+            return
+        value = str(text or "").strip()
+        if value == self._voice_order_last_input_text:
+            return
+        self._voice_order_last_input_text = value
+        view.setPlainText(value)
+
+    def _set_voice_order_llm_text(self, text: str):
+        view = getattr(self, "_voice_order_llm_edit", None)
+        if view is None:
+            return
+        value = str(text or "").strip() or "-"
+        if value == self._voice_order_last_llm_text:
+            return
+        self._voice_order_last_llm_text = value
+        view.setPlainText(value)
+
+    def _mark_voice_order_update(self, seen_at=None):
+        now = time.monotonic() if seen_at is None else float(seen_at)
+        prev = self._voice_prev_update_at
+        if prev is not None:
+            dt = now - float(prev)
+            if dt > 0.0:
+                self._voice_order_cycle_ms = dt * 1000.0
+        self._voice_prev_update_at = now
+        self._update_cycle_time_labels()
+
+    def _on_voice_cycle_tick(self, _tick_at: float, token: int):
+        if getattr(self, "_closing", False):
+            return
+        if int(token) != int(self._voice_cycle_worker_token):
+            return
+        toggle = getattr(self, "_voice_order_connection_toggle", None)
+        if toggle is None or (not bool(toggle.isChecked())):
+            return
+        backend = getattr(self, "backend", None)
+        if backend is None or (not hasattr(backend, "get_voice_order_snapshot")):
+            return
+        try:
+            payload, backend_seen_at = backend.get_voice_order_snapshot()
+        except Exception:
+            self._set_voice_order_status("끊김", "error")
+            return
+        self._voice_backend_poll_ok_at = float(_tick_at)
+        # 주문 결과가 아직 없으면 폴링 하트비트 간격을 표시한다.
+        if payload is None or backend_seen_at is None:
+            self._mark_voice_order_update(seen_at=float(_tick_at))
+            if self._voice_order_cycle_ms is None:
+                self._set_voice_order_status("연결중", "warn")
+            elif float(self._voice_order_cycle_ms) >= VOICE_ORDER_DISCONNECT_MS:
+                self._set_voice_order_status("끊김", "error")
+            elif float(self._voice_order_cycle_ms) >= VOICE_ORDER_DELAY_WARN_MS:
+                self._set_voice_order_status("지연", "warn")
+            else:
+                self._set_voice_order_status("정상연결", "ok")
+            return
+        backend_seen_at = float(backend_seen_at)
+        prev_seen_at = self._voice_backend_last_seen_at
+        if prev_seen_at is not None and abs(backend_seen_at - float(prev_seen_at)) < 1e-9:
+            self._mark_voice_order_update(seen_at=float(_tick_at))
+            if self._voice_order_cycle_ms is not None:
+                if float(self._voice_order_cycle_ms) >= VOICE_ORDER_DISCONNECT_MS:
+                    self._set_voice_order_status("끊김", "error")
+                elif float(self._voice_order_cycle_ms) >= VOICE_ORDER_DELAY_WARN_MS:
+                    self._set_voice_order_status("지연", "warn")
+                else:
+                    self._set_voice_order_status("정상연결", "ok")
+            return
+        self._voice_backend_last_seen_at = backend_seen_at
+        self._mark_voice_order_update(seen_at=float(_tick_at))
+        if self._voice_order_cycle_ms is None:
+            self._set_voice_order_status("정상연결", "ok")
+        elif float(self._voice_order_cycle_ms) >= VOICE_ORDER_DISCONNECT_MS:
+            self._set_voice_order_status("끊김", "error")
+        elif float(self._voice_order_cycle_ms) >= VOICE_ORDER_DELAY_WARN_MS:
+            self._set_voice_order_status("지연", "warn")
+        else:
+            self._set_voice_order_status("정상연결", "ok")
+
+    def _start_voice_cycle_worker(self):
+        if getattr(self, "_closing", False):
+            return
+        thread = getattr(self, "_voice_cycle_thread", None)
+        if thread is not None and thread.isRunning():
+            return
+        self._voice_cycle_worker_token += 1
+        token = int(self._voice_cycle_worker_token)
+        worker = VoiceOrderCycleWorker(VOICE_ORDER_CYCLE_INTERVAL_MS)
+        thread = QThread(self)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.finished.connect(thread.quit)
+        worker.tick.connect(lambda ts, _token=token: self._on_voice_cycle_tick(ts, _token))
+        thread.start()
+        self._voice_cycle_worker = worker
+        self._voice_cycle_thread = thread
+        self._append_voice_order_log(f"업데이트 워커 시작(interval={VOICE_ORDER_CYCLE_INTERVAL_MS}ms)")
+
+    def _stop_voice_cycle_worker(self, reason: str = ""):
+        worker = getattr(self, "_voice_cycle_worker", None)
+        thread = getattr(self, "_voice_cycle_thread", None)
+        if worker is None and thread is None:
+            return
+
+        if worker is not None:
+            try:
+                worker.tick.disconnect()
+            except Exception:
+                pass
+            try:
+                worker.stop()
+            except Exception:
+                pass
+            try:
+                worker.deleteLater()
+            except Exception:
+                pass
+        if thread is not None:
+            try:
+                thread.quit()
+            except Exception:
+                pass
+            if thread.isRunning():
+                if not thread.wait(1200):
+                    thread.requestInterruption()
+                    thread.wait(400)
+            try:
+                thread.deleteLater()
+            except Exception:
+                pass
+
+        self._voice_cycle_worker = None
+        self._voice_cycle_thread = None
+        if reason:
+            self._append_voice_order_log(f"업데이트 워커 중지: {reason}")
+
+    def _voice_order_webui_url(self):
+        host = str(VOICE_ORDER_WEBUI_HOST or "").strip() or "127.0.0.1"
+        if host in ("0.0.0.0", "::"):
+            host = "127.0.0.1"
+        port = str(VOICE_ORDER_WEBUI_PORT or "").strip() or "8000"
+        return f"http://{host}:{port}"
+
+    def _set_webui_order_start_enabled(self, enabled: bool, force: bool = False):
+        target = bool(enabled)
+        cached = getattr(self, "_webui_order_start_enabled_cached", None)
+        if (not force) and (cached is not None) and (bool(cached) == target):
+            return
+        url = f"{self._voice_order_webui_url()}/api/control/order_start_enabled"
+        payload = json.dumps({"enabled": target}, ensure_ascii=False).encode("utf-8")
+        req = urllib_request.Request(
+            url=url,
+            data=payload,
+            method="POST",
+            headers={"Content-Type": "application/json; charset=utf-8"},
+        )
+        try:
+            with urllib_request.urlopen(req, timeout=0.8) as resp:
+                if int(getattr(resp, "status", 200)) >= 400:
+                    raise RuntimeError(f"http_{getattr(resp, 'status', '-')}")
+            self._webui_order_start_enabled_cached = target
+        except urllib_error.URLError:
+            # Web UI 미실행 상태에서는 로그 스팸을 피하기 위해 무시.
+            return
+        except Exception as exc:
+            self._append_voice_order_log(f"WEB UI 주문시작 잠금 동기화 실패: {exc}", level="warning")
+
+    def _notify_bartender_tts_done(self):
+        run_id = int(getattr(self, "_voice_sequence_run_id", 0) or 0)
+        if run_id <= 0:
+            run_id = int(getattr(self, "_bartender_sequence_run_id", 0) or 0)
+        if run_id <= 0:
+            return
+
+        backend = getattr(self, "backend", None)
+        if backend is not None and hasattr(backend, "notify_bartender_tts_done"):
+            try:
+                ok, msg, _snap = backend.notify_bartender_tts_done(run_id=run_id)
+                if not ok:
+                    self._append_voice_order_log(f"TTS 완료 플래그 반영 실패: {msg}", level="warning")
+                return
+            except Exception as exc:
+                self._append_voice_order_log(f"TTS 완료 플래그 반영 예외: {exc}", level="warning")
+                return
+
+    def _refresh_voice_order_webui_badge(self):
+        label = getattr(self, "_voice_order_html_badge", None)
+        if label is None:
+            return
+        label.setText("주문 WEB UI: 비활성화 (프로세스 실행중)")
+
+    def _open_voice_order_webui(self):
+        url = self._voice_order_webui_url()
+        ok = bool(QDesktopServices.openUrl(QUrl(url)))
+        if ok:
+            self._append_voice_order_log(f"WEB UI 열기: {url}")
+        else:
+            self._append_voice_order_log(f"WEB UI 열기 실패: {url}")
+
+    def _capture_voice_input_once(self):
+        if str(getattr(self, "_bartender_mode", "") or "").strip().lower() == "auto":
+            self._append_voice_order_log("오토모드에서는 개발자 UI 마이크 시작을 사용할 수 없습니다. WEB UI에서 시작하세요.", level="warning")
+            return
+        if bool(getattr(self, "_voice_order_mic_test_running", False)):
+            self._stop_voice_order_mic_test_monitor("STT 입력 시작")
+        toggle = getattr(self, "_voice_order_connection_toggle", None)
+        if toggle is not None and (not bool(toggle.isChecked())):
+            self._append_voice_order_log("마이크 입력 요청 거부: 음성주문 비활성화 상태")
+            return
+        backend = getattr(self, "backend", None)
+        if bool(getattr(self, "_voice_sequence_running", False)) and backend is not None and hasattr(
+            backend, "stop_bartender_sequence"
+        ):
+            self._append_voice_order_log("음성주문 시퀀스 중지 요청")
+            ok_stop, msg_stop, snap = backend.stop_bartender_sequence(reason="음성주문 입력 중지")
+            self._append_voice_order_log(
+                f"음성주문 시퀀스 중지 {'완료' if ok_stop else '실패'}: {msg_stop}",
+                level=("warning" if ok_stop else "error"),
+            )
+            if isinstance(snap, dict):
+                self._apply_bartender_sequence_snapshot(snap)
+            return
+        if bool(getattr(self, "_bartender_sequence_running", False)) and backend is not None and hasattr(
+            backend, "stop_bartender_sequence"
+        ):
+            self._append_voice_order_log("시퀀스 중지 요청: 음성주문 재입력")
+            ok_stop, msg_stop, snap = backend.stop_bartender_sequence(reason="음성주문 재입력")
+            self._append_voice_order_log(
+                f"시퀀스 중지 {'완료' if ok_stop else '실패'}: {msg_stop}",
+                level=("warning" if ok_stop else "error"),
+            )
+            if isinstance(snap, dict):
+                self._apply_bartender_sequence_snapshot(snap)
+            self._update_bartender_mode_ui()
+            return
+        if self._is_voice_order_worker_running():
+            self._append_voice_order_log("마이크 입력 중지 요청")
+            self._stop_voice_order_worker(reason="사용자 중지 요청")
+            self._set_voice_order_process_state("중단")
+            self._set_voice_order_mic_state("중단됨", "warn")
+            self._set_voice_order_mic_visual_active(False)
+            return
+        self._voice_ready_tone_armed = True
+        self._set_voice_order_process_state("입력요청중")
+        self._set_voice_order_mic_state("입력 요청중", "warn")
+        self._set_voice_order_mic_visual_active(False)
+        QApplication.processEvents()
+        self._start_voice_order_test(request_stt=True)
+
+    def _set_voice_order_status(self, text: str, severity: str = "info"):
+        label = getattr(self, "_voice_order_connection_label", None)
+        dot = getattr(self, "_voice_order_connection_dot", None)
+        if label is None or dot is None:
+            return
+        state_text = str(text or "").strip() or "-"
+        sev = str(severity or "info").strip().lower()
+        self._voice_order_status_text = state_text
+        self._voice_order_status_severity = sev
+
+        if sev in ("ok", "normal", "success"):
+            bright = STATE_COLOR_NORMAL
+        elif sev in ("error", "fail", "failed"):
+            bright = STATE_COLOR_ERROR
+        else:
+            bright = STATE_COLOR_WARNING
+        dim = "#ffffff"
+
+        # 음성주문 상태도 상단 상태등처럼 점멸 표현을 적용한다.
+        phase = time.monotonic() % 1.0
+        fade = 0.5 * (1.0 + np.sin((2.0 * np.pi * phase) - (np.pi / 2.0)))
+        should_blink = True
+
+        def _hex_to_rgb(h: str):
+            h = str(h or "#000000").lstrip("#")
+            if len(h) != 6:
+                return 0, 0, 0
+            return int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+
+        def _mix(c1: str, c2: str, t: float):
+            r1, g1, b1 = _hex_to_rgb(c1)
+            r2, g2, b2 = _hex_to_rgb(c2)
+            return (
+                int(max(0, min(255, round(r1 + (r2 - r1) * t)))),
+                int(max(0, min(255, round(g1 + (g2 - g1) * t)))),
+                int(max(0, min(255, round(b1 + (b2 - b1) * t)))),
+            )
+
+        if should_blink:
+            r, g, b = _mix(dim, bright, fade)
+            alpha = int(max(0, min(255, round(255.0 * fade))))
+        else:
+            r, g, b = _hex_to_rgb(bright)
+            alpha = 255
+
+        label.setText(f"음성주문: {state_text}")
+        label.setStyleSheet("font-size: 14pt; font-weight: 700; color: #202020;")
+        dot.setStyleSheet(f"font-size: 20pt; color: rgba({r}, {g}, {b}, {alpha});")
+
+    def _append_voice_order_log(self, message: str, level: str = "info"):
+        text = str(message or "").strip()
+        if not text:
+            return
+        lv = str(level or "info").strip().lower()
+        if lv in ("warn", "warning"):
+            prefix = "[음성주문][경고]"
+        elif lv in ("error", "err", "fail", "failed"):
+            prefix = "[음성주문][오류]"
+        else:
+            prefix = "[음성주문]"
+        self.append_log(f"{prefix} {text}\n")
+
+    def _set_voice_order_process_state(self, state_text: str):
+        next_state = str(state_text or "").strip() or "대기"
+        # STT 청취 진행 중에는 레이스로 "대기"가 덮어쓰지 못하도록 막는다.
+        if next_state == "대기":
+            mic_state = str(getattr(self, "_voice_order_mic_state_text", "") or "").strip()
+            if mic_state == "입력중":
+                return
+            if bool(getattr(self, "_voice_sequence_running", False)) and bool(getattr(self, "_voice_ready_tone_armed", False)):
+                return
+        self._voice_order_process_state = next_state
+        self._set_voice_order_result(self._voice_last_result)
+
+    def _voice_order_result_text(self, status: str) -> str:
+        value = str(status or "").strip().lower()
+        if value == "success":
+            return "성공"
+        if value == "retry":
+            return "재입력 필요"
+        if value == "error":
+            return "실패"
+        if value in ("-", ""):
+            return "-"
+        return value
+
+    def _set_voice_order_result(self, payload: dict | None):
+        view = getattr(self, "_voice_order_recipe_view", None)
+        if view is None:
+            return
+        if not payload:
+            self._set_voice_order_llm_text("-")
+            view.setPlainText(
+                f"처리상태: {self._voice_order_process_state}\n"
+                "도출결과: -\n"
+                "메뉴: -\n"
+                "레시피: -"
+            )
+            return
+        menu_label = str(payload.get("selected_menu_label") or "").strip()
+        menu_code = str(payload.get("selected_menu") or "").strip()
+        if not menu_label:
+            menu_label = menu_code or "-"
+        status = str(payload.get("status") or "-")
+        llm_text = str(payload.get("llm_text") or payload.get("tts_text") or "-")
+        llm_text = self._sanitize_customer_tts_text(status=status, raw_text=llm_text)
+        recipe = payload.get("recipe", {})
+        if isinstance(recipe, dict) and recipe:
+            recipe_text = ", ".join(f"{k}: {v}ml" for k, v in recipe.items())
+        else:
+            recipe_text = "-"
+        self._set_voice_order_llm_text(llm_text)
+        view.setPlainText(
+            f"처리상태: {self._voice_order_process_state}\n"
+            f"도출결과: {self._voice_order_result_text(status)}\n"
+            f"메뉴: {menu_label}\n"
+            f"레시피: {recipe_text}"
+        )
+
+    def _sanitize_customer_tts_text(self, status: str, raw_text: str) -> str:
+        st = str(status or "").strip().lower()
+        text = str(raw_text or "").strip()
+        if st == "error":
+            return str(VOICE_ORDER_CUSTOMER_ERROR_TTS_TEXT)
+        return text or "-"
+
+    def _play_voice_order_ready_tone(self):
+        now = time.monotonic()
+        # 버튼 클릭 직후와 stt_wait 이벤트가 근접해서 들어올 수 있어 중복음을 제한한다.
+        if (now - float(getattr(self, "_voice_ready_tone_last_at", 0.0))) < 0.35:
+            return
+        self._voice_ready_tone_last_at = float(now)
+
+        play_ms = int(max(80, min(400, int(float(os.environ.get("VOICE_ORDER_READY_BEEP_MS", "170"))))))
+        freq_hz = float(os.environ.get("VOICE_ORDER_READY_BEEP_HZ", "1180") or "1180")
+        gain = float(os.environ.get("VOICE_ORDER_READY_BEEP_GAIN", "0.35") or "0.35")
+        gain = max(0.08, min(0.95, gain))
+        duration_sec = float(play_ms) / 1000.0
+        sample_rate = 16000
+        samples = np.linspace(0.0, duration_sec, int(sample_rate * duration_sec), endpoint=False, dtype=np.float32)
+        tone = (gain * np.sin(2.0 * np.pi * freq_hz * samples)).astype(np.float32)
+        wave_buf = tone
+
+        def _play_worker():
+            if sd is not None:
+                try:
+                    if not bool(getattr(self, "_voice_ready_tone_warmed", False)):
+                        warm = np.zeros(int(sample_rate * 0.04), dtype=np.float32)
+                        sd.play(warm, sample_rate, blocking=True)
+                        sd.stop()
+                        self._voice_ready_tone_warmed = True
+                    sd.play(wave_buf, sample_rate, blocking=True)
+                    sd.stop()
+                    return
+                except Exception:
+                    pass
+            try:
+                QApplication.beep()
+            except Exception:
+                pass
+
+        threading.Thread(target=_play_worker, daemon=True).start()
+
+    def _play_voice_order_feedback_tone(self, tts_text: str, on_complete=None):
+        text = str(tts_text or "").strip()
+        if not text:
+            self._set_voice_order_process_state("대기")
+            if callable(on_complete):
+                try:
+                    on_complete()
+                except Exception:
+                    pass
+            return
+        play_gen = int(getattr(self, "_voice_feedback_audio_gen", 0) or 0)
+        play_ms = int(max(520, min(5200, 320 + (len(text) * 95))))
+        self._set_voice_order_process_state("응답 음성 출력중")
+
+        def _play_wav_bytes(wav_bytes: bytes):
+            if sd is None:
+                return False
+            try:
+                with io.BytesIO(bytes(wav_bytes or b"")) as bio:
+                    with wave.open(bio, "rb") as wav_fp:
+                        channels = int(wav_fp.getnchannels())
+                        sample_width = int(wav_fp.getsampwidth())
+                        sample_rate = int(wav_fp.getframerate())
+                        frame_count = int(wav_fp.getnframes())
+                        pcm_bytes = wav_fp.readframes(frame_count)
+                if sample_width == 1:
+                    samples = np.frombuffer(pcm_bytes, dtype=np.uint8).astype(np.float32)
+                    samples = (samples - 128.0) / 128.0
+                elif sample_width == 2:
+                    samples = np.frombuffer(pcm_bytes, dtype=np.int16).astype(np.float32) / 32768.0
+                elif sample_width == 4:
+                    samples = np.frombuffer(pcm_bytes, dtype=np.int32).astype(np.float32) / 2147483648.0
+                else:
+                    return False
+                if samples.size <= 0:
+                    return False
+                if channels > 1:
+                    samples = samples.reshape(-1, channels)
+                sd.play(samples, sample_rate, blocking=True)
+                sd.stop()
+                return True
+            except Exception:
+                return False
+
+        def _play_worker():
+            def _is_canceled() -> bool:
+                return int(getattr(self, "_voice_feedback_audio_gen", 0) or 0) != int(play_gen)
+
+            def _emit_tts_log(msg: str, level: str = "info"):
+                try:
+                    self.voice_order_event_received.emit(
+                        {
+                            "type": "tts_log",
+                            "message": str(msg or "").strip(),
+                            "level": str(level or "info").strip().lower(),
+                        }
+                    )
+                except Exception:
+                    pass
+
+            try:
+                if _is_canceled():
+                    return
+                spoken = False
+                use_openai_tts = str(os.environ.get("VOICE_ORDER_USE_OPENAI_TTS", "1") or "").strip().lower()
+                use_openai_tts = use_openai_tts not in ("0", "false", "no", "off")
+
+                if use_openai_tts:
+                    if _is_canceled():
+                        return
+                    try:
+                        tts_result = synthesize_openai_tts(text)
+                        spoken = _play_wav_bytes(tts_result.audio_bytes)
+                        if spoken:
+                            _emit_tts_log(
+                                (
+                                    "OpenAI TTS 출력 완료 "
+                                    f"(model={tts_result.model}, voice={tts_result.voice}, speed={tts_result.speed:.2f})"
+                                ),
+                                level="info",
+                            )
+                    except Exception as exc:
+                        err_text = str(exc or "").strip() or "unknown_error"
+                        if ("insufficient_quota" in err_text.lower()) or (" 429" in f" {err_text}") or ("429" in err_text):
+                            _emit_tts_log(f"OpenAI TTS 실패(쿼터 부족/결제 확인 필요): {err_text}", level="warning")
+                        else:
+                            _emit_tts_log(f"OpenAI TTS 실패: {err_text}", level="warning")
+                        spoken = False
+                    if spoken:
+                        return
+                else:
+                    _emit_tts_log("OpenAI TTS 비활성화: fallback 출력 사용", level="warning")
+
+                use_spd_say_fallback = str(os.environ.get("VOICE_ORDER_TTS_FALLBACK_SPD_SAY", "0") or "").strip().lower()
+                use_spd_say_fallback = use_spd_say_fallback in ("1", "true", "yes", "on")
+                if use_spd_say_fallback:
+                    if _is_canceled():
+                        return
+                    try:
+                        result = subprocess.run(
+                            ["spd-say", "-w", text],
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL,
+                            timeout=max(2.0, float(play_ms) / 1000.0 + 1.5),
+                            check=False,
+                        )
+                        spoken = (int(getattr(result, "returncode", 1)) == 0)
+                    except Exception:
+                        spoken = False
+                    if spoken:
+                        _emit_tts_log("fallback 음성 출력(spd-say) 사용", level="warning")
+
+                    if spoken:
+                        return
+
+                use_tone_fallback = str(os.environ.get("VOICE_ORDER_TTS_FALLBACK_TONE", "1") or "").strip().lower()
+                use_tone_fallback = use_tone_fallback in ("1", "true", "yes", "on")
+                if not use_tone_fallback:
+                    _emit_tts_log("TTS 음성 출력 실패: fallback 톤 비활성화", level="error")
+                    return
+
+                if sd is not None:
+                    if _is_canceled():
+                        return
+                    try:
+                        duration_sec = float(play_ms) / 1000.0
+                        freq_hz = 660.0
+                        sample_rate = 16000
+                        samples = np.linspace(
+                            0.0,
+                            duration_sec,
+                            int(sample_rate * duration_sec),
+                            endpoint=False,
+                            dtype=np.float32,
+                        )
+                        wave = (0.22 * np.sin(2.0 * np.pi * freq_hz * samples)).astype(np.float32)
+                        sd.play(wave, sample_rate, blocking=True)
+                        sd.stop()
+                        _emit_tts_log("TTS 음성 출력 실패: 톤 알림으로 대체", level="warning")
+                        return
+                    except Exception:
+                        pass
+                try:
+                    QApplication.beep()
+                    _emit_tts_log("TTS 음성 출력 실패: 시스템 beep로 대체", level="warning")
+                except Exception:
+                    pass
+            finally:
+                try:
+                    self.voice_order_event_received.emit({"type": "tts_done"})
+                except Exception:
+                    pass
+                if callable(on_complete):
+                    try:
+                        on_complete()
+                    except Exception:
+                        pass
+
+        threading.Thread(target=_play_worker, daemon=True).start()
+
+    def _schedule_voice_retry_auto_listen(self, tts_text: str):
+        # 음성주문 테스트 경로에서 retry가 나오면, 안내 음성 종료 후 자동 재청취를 시작한다.
+        if bool(getattr(self, "_bartender_sequence_running", False)):
+            return
+        toggle = getattr(self, "_voice_order_connection_toggle", None)
+        if toggle is not None and (not bool(toggle.isChecked())):
+            return
+        if self._is_voice_order_worker_running():
+            return
+        auto_retry_on = str(os.environ.get("VOICE_ORDER_RETRY_AUTO_LISTEN", "1") or "").strip().lower()
+        if auto_retry_on in ("0", "false", "no", "off"):
+            return
+
+        text = str(tts_text or "").strip()
+        if text:
+            play_ms = int(max(520, min(5200, 320 + (len(text) * 95))))
+            delay_ms = int(play_ms + 260)
+        else:
+            delay_ms = 220
+
+        def _restart():
+            if bool(getattr(self, "_closing", False)):
+                return
+            toggle_now = getattr(self, "_voice_order_connection_toggle", None)
+            if toggle_now is not None and (not bool(toggle_now.isChecked())):
+                return
+            if self._is_voice_order_worker_running():
+                return
+            self._append_voice_order_log("재입력 자동 대기 시작")
+            self._start_voice_order_test(request_stt=True)
+
+        QTimer.singleShot(delay_ms, _restart)
+
+    def _start_voice_order_test(self, request_stt: bool = False):
+        if self._voice_order_input_edit is None:
+            return
+        if str(getattr(self, "_bartender_mode", "") or "").strip().lower() == "auto":
+            self._append_voice_order_log("오토모드에서는 개발자 UI 음성 테스트를 시작하지 않습니다. WEB UI에서 시작하세요.", level="warning")
+            self._update_voice_mic_button_state()
+            return
+        backend = getattr(self, "backend", None)
+        if backend is not None and hasattr(backend, "start_bartender_sequence") and hasattr(
+            backend, "get_bartender_sequence_snapshot"
+        ):
+            if bool(getattr(self, "_voice_sequence_running", False)):
+                self._append_voice_order_log("이미 마이크 입력이 진행 중입니다.")
+                self._update_voice_mic_button_state()
+                return
+            input_text = self._voice_order_input_edit.toPlainText().strip()
+            if (not request_stt) and (not input_text):
+                QMessageBox.warning(self, "음성주문", "마이크 입력(STT 결과)이 아직 없습니다.")
+                return
+            if request_stt and self._voice_order_input_edit is not None:
+                self._voice_order_last_input_text = ""
+                self._voice_order_input_edit.setPlainText("노트북 마이크 입력 대기중...")
+            self._voice_last_result = None
+            self._set_voice_order_llm_text("-")
+            self._set_voice_order_process_state("진행중")
+            self._set_voice_order_mic_visual_active(bool(request_stt))
+            self._set_voice_order_result(None)
+            self._append_voice_order_log("=== 테스트 시작(시퀀스 공통루트) ===")
+
+            request_payload = {
+                "input_text": "" if bool(request_stt) else str(input_text or "").strip(),
+                "request_stt": bool(request_stt),
+                "allow_llm": True,
+                "voice_only": True,
+                # voice_only 경로는 프론트 TTS 완료 후 재청취를 시작해야 하므로
+                # 백엔드 내부 자동 재시도(2/3...)는 비활성화한다.
+                "voice_retry_max_attempts": 1,
+            }
+
+            self._bartender_status_lock = False
+            self._voice_sequence_running = True
+            self._update_voice_mic_button_state()
+            ok_start, msg_start, snap = backend.start_bartender_sequence(mode="manual", request=request_payload)
+            if not ok_start:
+                self._voice_sequence_running = False
+                self._voice_sequence_run_id = 0
+                self._append_voice_order_log(f"시퀀스 시작 실패: {msg_start}", level="error")
+                if isinstance(snap, dict):
+                    self._apply_bartender_sequence_snapshot(snap)
+                else:
+                    self._set_voice_order_process_state("실패")
+                    self._set_voice_order_mic_state("오류", "error")
+                    self._set_voice_order_mic_visual_active(False)
+                self._update_voice_mic_button_state()
+                return
+            self._append_voice_order_log(f"시퀀스 시작: {msg_start}")
+            self._voice_sequence_running = True
+            if isinstance(snap, dict):
+                try:
+                    self._voice_sequence_run_id = int(snap.get("run_id", 0) or 0)
+                except Exception:
+                    self._voice_sequence_run_id = 0
+            if isinstance(snap, dict):
+                self._apply_bartender_sequence_snapshot(dict(snap))
+            self._update_voice_mic_button_state()
+            return
+
+        if self._is_voice_order_worker_running():
+            self._append_voice_order_log("이미 마이크 입력이 진행 중입니다.")
+            self._update_voice_mic_button_state()
+            return
+        input_text = self._voice_order_input_edit.toPlainText().strip()
+        if (not request_stt) and (not input_text):
+            QMessageBox.warning(self, "음성주문", "마이크 입력(STT 결과)이 아직 없습니다.")
+            return
+        if request_stt and self._voice_order_input_edit is not None:
+            self._voice_order_last_input_text = ""
+            self._voice_order_input_edit.setPlainText("노트북 마이크 입력 대기중...")
+        self._voice_worker_done = False
+        self._voice_ready_tone_armed = bool(request_stt)
+        self._voice_last_result = None
+        self._set_voice_order_llm_text("-")
+        self._set_voice_order_process_state("진행중")
+        self._set_voice_order_mic_visual_active(bool(request_stt))
+        self._set_voice_order_result(None)
+        self._append_voice_order_log("=== 테스트 시작 ===")
+        payload = {"input_text": input_text, "allow_llm": True, "request_stt": bool(request_stt)}
+        if not self._start_voice_order_worker(payload):
+            self._voice_worker_running = False
+            self._set_voice_order_process_state("실패")
+            self._set_voice_order_mic_state("오류", "error")
+            self._set_voice_order_mic_visual_active(False)
+            self._update_voice_mic_button_state()
+
+    def _start_voice_order_worker(self, payload: dict) -> bool:
+        backend = getattr(self, "backend", None)
+        if backend is None or (not hasattr(backend, "run_voice_order_runtime")):
+            self._append_voice_order_log("음성주문 백엔드가 아직 준비되지 않았습니다.")
+            return False
+
+        self._voice_worker_token += 1
+        token = int(self._voice_worker_token)
+        self._voice_worker_proc = None
+        self._voice_worker_running = True
+        self._update_voice_mic_button_state()
+        thread = threading.Thread(
+            target=self._run_voice_order_backend_job,
+            args=(token, dict(payload or {})),
+            name=f"voice-backend-worker-{token}",
+            daemon=True,
+        )
+        self._voice_worker_thread = thread
+        thread.start()
+        self._append_voice_order_log("백엔드 음성주문 워커 시작")
+        return True
+
+    def _run_voice_order_backend_job(self, token: int, payload: dict):
+        rc = 0
+        try:
+            backend = getattr(self, "backend", None)
+            if backend is None or (not hasattr(backend, "run_voice_order_runtime")):
+                raise RuntimeError("음성주문 백엔드가 준비되지 않았습니다.")
+
+            input_text = str((payload or {}).get("input_text", "") or "").strip()
+            recommend_menu = str((payload or {}).get("recommend_menu", "") or "").strip()
+            allow_llm = bool((payload or {}).get("allow_llm", True))
+            request_stt = bool((payload or {}).get("request_stt", False))
+            streamed_event_count = 0
+
+            def _on_backend_event(evt):
+                nonlocal streamed_event_count
+                if not isinstance(evt, dict):
+                    return
+                event = dict(evt)
+                event["_token"] = int(token)
+                streamed_event_count += 1
+                self.voice_order_event_received.emit(event)
+
+            ok, out_payload, msg = backend.run_voice_order_runtime(
+                input_text=input_text,
+                recommend_menu=recommend_menu,
+                allow_llm=allow_llm,
+                request_stt=request_stt,
+                event_callback=_on_backend_event,
+            )
+            if not isinstance(out_payload, dict):
+                raise RuntimeError(str(msg or "음성주문 처리 실패"))
+
+            if streamed_event_count <= 0:
+                for item in list(out_payload.get("events", []) or []):
+                    if not isinstance(item, dict):
+                        continue
+                    event = dict(item)
+                    event["_token"] = int(token)
+                    self.voice_order_event_received.emit(event)
+
+            result = out_payload.get("result", {})
+            if isinstance(result, dict):
+                event = dict(result)
+                event["type"] = "result"
+                event["_token"] = int(token)
+                self.voice_order_event_received.emit(event)
+
+            done_ok = bool(out_payload.get("ok", ok))
+            if (not ok) and done_ok:
+                done_ok = False
+            self.voice_order_event_received.emit({"type": "done", "ok": done_ok, "_token": int(token)})
+            if not done_ok:
+                rc = 1
+        except Exception as e:
+            rc = 1
+            self.voice_order_event_received.emit(
+                {"type": "error", "message": f"백엔드 음성주문 처리 예외: {e}", "_token": int(token)}
+            )
+            self.voice_order_event_received.emit({"type": "done", "ok": False, "_token": int(token)})
+        finally:
+            self.voice_order_event_received.emit({"type": "process_exit", "returncode": int(rc), "_token": int(token)})
+            if int(token) == int(self._voice_worker_token):
+                self._voice_worker_thread = None
+
+    def _on_voice_order_worker_event(self, event):
+        if not isinstance(event, dict):
+            return
+        evt_type = str(event.get("type", "") or "").strip().lower()
+        if evt_type == "tts_log":
+            self._append_voice_order_log(str(event.get("message", "") or "").strip(), level=event.get("level", "info"))
+            return
+        if evt_type == "tts_done":
+            self._set_voice_order_process_state("대기")
+            self._notify_bartender_tts_done()
+            if bool(getattr(self, "_voice_retry_pending_after_tts", False)):
+                self._voice_retry_pending_after_tts = False
+                self._schedule_voice_retry_auto_listen("")
+            return
+        toggle = getattr(self, "_voice_order_connection_toggle", None)
+        if toggle is not None and (not bool(toggle.isChecked())):
+            return
+        token = int(event.get("_token", -1))
+        if token != int(self._voice_worker_token):
+            return
+        self._mark_voice_order_update()
+        if evt_type == "stage":
+            stage = str(event.get("stage", "") or "")
+            stage_norm = stage.strip().lower()
+            actor = str(event.get("actor", "") or "")
+            message = str(event.get("message", "") or "")
+            data = event.get("data", None)
+            transcript = ""
+            if isinstance(data, dict):
+                for key in ("input_text", "stt_text", "recognized_text", "transcript", "text"):
+                    value = data.get(key, None)
+                    if value is None:
+                        continue
+                    transcript = str(value).strip()
+                    if transcript:
+                        break
+            if transcript:
+                self._set_voice_order_input_text(transcript)
+            elif stage_norm == "stt":
+                maybe_text = str(event.get("text", "") or "").strip()
+                if maybe_text:
+                    self._set_voice_order_input_text(maybe_text)
+            if stage_norm == "stt_open":
+                if bool(self._voice_ready_tone_armed):
+                    self._voice_ready_tone_armed = False
+                    self._play_voice_order_ready_tone()
+            elif stage_norm == "stt_wait":
+                self._set_voice_order_process_state("마이크입력대기")
+                self._set_voice_order_mic_state("입력중", "ok")
+                self._set_voice_order_mic_visual_active(True)
+                if isinstance(data, dict):
+                    stt_idx = data.get("device_index", None)
+                    stt_name = str(data.get("device_name", "") or "").strip()
+                    test_idx = getattr(self, "_voice_order_mic_test_selected_index", None)
+                    test_name = str(getattr(self, "_voice_order_mic_test_selected_name", "") or "").strip()
+                    if test_name or (test_idx is not None):
+                        mismatch = (stt_idx != test_idx) or (test_name and stt_name and stt_name != test_name)
+                        if mismatch:
+                            self._append_voice_order_log(
+                                f"[mic_test] 장치 불일치 감지: test(index={test_idx},name={test_name}) "
+                                f"!= stt(index={stt_idx},name={stt_name})",
+                                level="warning",
+                            )
+            elif stage_norm == "stt_process":
+                self._set_voice_order_process_state("STT 처리중")
+                self._set_voice_order_mic_state("STT 처리중", "warn")
+                self._set_voice_order_mic_visual_active(False)
+            elif stage_norm in ("classify", "llm", "recipe"):
+                self._set_voice_order_process_state("주문분석중")
+                self._set_voice_order_mic_state("처리중", "warn")
+                self._set_voice_order_mic_visual_active(False)
+            line = f"[{stage}] {actor}: {message}"
+            if data is not None:
+                try:
+                    line += f" | {json.dumps(data, ensure_ascii=False)}"
+                except Exception:
+                    line += f" | {data}"
+            self._append_voice_order_log(line)
+            return
+        if evt_type == "mic_level":
+            # 입력요청중/분석중 단계에서는 게이지를 띄우지 않는다.
+            if str(getattr(self, "_voice_order_mic_state_text", "") or "").strip() != "입력중":
+                return
+            self._set_voice_order_mic_visual_active(True)
+            self._set_voice_order_mic_level(event.get("level", 0))
+            return
+        if evt_type == "result":
+            self._voice_last_result = dict(event)
+            self._set_voice_order_result(self._voice_last_result)
+            menu = str(event.get("selected_menu_label") or event.get("selected_menu") or "-")
+            self._append_voice_order_log(f"[result] 메뉴={menu}, status={event.get('status')}")
+            return
+        if evt_type == "done":
+            self._voice_worker_done = True
+            self._voice_worker_running = False
+            self._voice_ready_tone_armed = False
+            self._set_voice_order_mic_state("대기", "info")
+            self._set_voice_order_mic_visual_active(False)
+            self._update_voice_mic_button_state()
+            ok = bool(event.get("ok", False))
+            if not ok:
+                self._set_voice_order_process_state("실패")
+                self._append_voice_order_log("[done] 처리 실패", level="error")
+                return
+            if str(getattr(self, "_bartender_mode", "") or "").strip().lower() == "auto":
+                # 오토모드에서는 개발자 UI가 음성 출력을 하지 않는다.
+                self._voice_retry_pending_after_tts = False
+                self._set_voice_order_process_state("완료")
+                self._append_voice_order_log("[done] 처리 완료(오토모드: 음성출력은 WEB UI)")
+                return
+            status_text = str((self._voice_last_result or {}).get("status", "")).strip().lower()
+            tts_text = str((self._voice_last_result or {}).get("tts_text", "") or "").strip()
+            public_tts = self._sanitize_customer_tts_text(status=status_text, raw_text=tts_text)
+            if status_text == "success":
+                self._voice_retry_pending_after_tts = False
+                self._set_voice_order_process_state("완료")
+                self._append_voice_order_log("[done] 처리 완료")
+                self._play_voice_order_feedback_tone(public_tts)
+            elif status_text == "retry":
+                self._voice_retry_pending_after_tts = True
+                self._set_voice_order_process_state("완료(재입력)")
+                self._append_voice_order_log("[done] 재입력 필요")
+                self._play_voice_order_feedback_tone(public_tts)
+            else:
+                self._voice_retry_pending_after_tts = False
+                self._set_voice_order_process_state("완료")
+                self._append_voice_order_log("[done] 처리 완료")
+                self._play_voice_order_feedback_tone(tts_text)
+            return
+        if evt_type == "stderr":
+            sev = str(event.get("severity", "warning") or "warning").strip().lower()
+            message = str(event.get("message", "") or "")
+            self._append_voice_order_log(f"[stderr] {message}", level=("warning" if sev == "warning" else "error"))
+            return
+        if evt_type == "error":
+            self._voice_worker_running = False
+            self._voice_ready_tone_armed = False
+            self._voice_retry_pending_after_tts = False
+            self._set_voice_order_process_state("실패")
+            self._set_voice_order_mic_state("오류", "error")
+            self._set_voice_order_mic_visual_active(False)
+            self._update_voice_mic_button_state()
+            self._append_voice_order_log(f"[error] {event.get('message', '')}", level="error")
+            return
+        if evt_type == "process_exit":
+            rc = int(event.get("returncode", -1))
+            proc = self._voice_worker_proc
+            if proc is not None and proc.poll() is not None:
+                self._voice_worker_proc = None
+            if rc != 0 and not self._voice_worker_done:
+                self._set_voice_order_process_state("실패")
+                self._set_voice_order_mic_state("오류", "error")
+                self._append_voice_order_log(f"워커 비정상 종료(returncode={rc})", level="error")
+            elif rc == 0 and not self._voice_worker_done:
+                self._set_voice_order_process_state("완료")
+                self._set_voice_order_mic_state("대기", "info")
+                self._append_voice_order_log("워커 종료")
+            self._voice_worker_running = False
+            self._set_voice_order_mic_visual_active(False)
+            self._update_voice_mic_button_state()
+            return
+        self._append_voice_order_log(str(event))
+
+    def _stop_voice_order_worker(self, reason: str = ""):
+        backend = getattr(self, "backend", None)
+        if bool(getattr(self, "_voice_sequence_running", False)) and backend is not None and hasattr(
+            backend, "stop_bartender_sequence"
+        ):
+            try:
+                ok_stop, msg_stop, snap = backend.stop_bartender_sequence(reason=(str(reason or "").strip() or "음성주문 중지"))
+                self._append_voice_order_log(
+                    f"음성주문 시퀀스 중지 {'완료' if ok_stop else '실패'}: {msg_stop}",
+                    level=("warning" if ok_stop else "error"),
+                )
+                if isinstance(snap, dict):
+                    self._apply_bartender_sequence_snapshot(snap)
+            except Exception as exc:
+                self._append_voice_order_log(f"음성주문 시퀀스 중지 예외: {exc}", level="error")
+            self._voice_sequence_running = False
+            self._voice_sequence_run_id = 0
+
+        self._voice_worker_token += 1
+        self._voice_worker_done = True
+        self._voice_worker_running = False
+        self._voice_ready_tone_armed = False
+        self._set_voice_order_mic_visual_active(False)
+        self._voice_worker_thread = None
+        proc = self._voice_worker_proc
+        if proc is None:
+            if reason:
+                self._append_voice_order_log(f"워커 중지: {reason}")
+            self._set_voice_order_process_state("대기")
+            self._set_voice_order_mic_state("대기", "info")
+            self._update_voice_mic_button_state()
+            return
+        self._voice_worker_proc = None
+        if proc.poll() is None:
+            try:
+                proc.terminate()
+                proc.wait(timeout=1.2)
+            except Exception:
+                try:
+                    proc.kill()
+                    proc.wait(timeout=0.5)
+                except Exception:
+                    pass
+        if reason:
+            self._append_voice_order_log(f"워커 중지: {reason}")
+        self._set_voice_order_process_state("대기")
+        self._set_voice_order_mic_state("대기", "info")
+        self._update_voice_mic_button_state()
+
     def _reserve_top_status_space(self):
         if self._status_row_ready:
             return
@@ -793,60 +3954,112 @@ class App(QMainWindow, form):
         if frame_l is None or frame_r is None or frame_log is None:
             return
 
-        target_y = TOP_STATUS_BAR_HEIGHT + TOP_STATUS_GAP
-        dx_l = frame_l.x()
-        dx_m = frame_m.x() if frame_m is not None else None
-        dx_r = frame_r.x()
-        w_l = frame_l.width()
-        w_m = frame_m.width() if frame_m is not None else None
-        w_r = frame_r.width()
+        margin = DASHBOARD_MARGIN
+        col_gap = DASHBOARD_COL_GAP
+        row_gap = DASHBOARD_ROW_GAP
 
-        total_h = max(640, self.centralwidget.height())
-        upper_h = int(total_h * 0.58)
-        upper_h = max(470, upper_h)
-        upper_h = min(upper_h, total_h - 240)
-        h_lr = upper_h
-        frame_l.setGeometry(dx_l, target_y, w_l, h_lr)
-        if frame_m is not None and dx_m is not None and w_m is not None:
-            frame_m.setGeometry(dx_m, target_y, w_m, h_lr)
-        frame_r.setGeometry(dx_r, target_y, w_r, h_lr)
+        has_top_status_row = self._top_status_panel is not None
+        target_y = (TOP_STATUS_BAR_HEIGHT + TOP_STATUS_GAP) if has_top_status_row else margin
+        base_col_w = [int(DASHBOARD_COL_WIDTHS[0]), int(DASHBOARD_COL_WIDTHS[1]), int(DASHBOARD_COL_WIDTHS[2])]
+        section_w = int(min(base_col_w[1], base_col_w[2]))
+        left_w = int(min(base_col_w[0], max(400, int(section_w * 0.92))))
+        col_w = [left_w, section_w, section_w]
+        row1_h = int(DASHBOARD_TOP_PANEL_HEIGHT)
+        row2_h = int(DASHBOARD_BOTTOM_PANEL_HEIGHT)
+        combined_top_h = row1_h + row_gap + row2_h
+        log_h = max(
+            int(DASHBOARD_LOG_MIN_HEIGHT),
+            int(round(float(combined_top_h) * float(DASHBOARD_LOG_HEIGHT_RATIO))),
+        )
+        content_h = row1_h + row_gap + row2_h + row_gap + log_h
+
+        total_grid_w = col_w[0] + col_gap + col_w[1] + col_gap + col_w[2]
+        required_central_w = (2 * margin) + total_grid_w
+        required_central_h = target_y + content_h + margin + DASHBOARD_BOTTOM_EXTRA_MARGIN
+        central_w = int(self.centralwidget.width())
+        central_h = int(self.centralwidget.height())
+        extra_w = max(0, int(self.width()) - central_w)
+        extra_h = max(0, int(self.height()) - central_h)
+        required_window_w = required_central_w + extra_w
+        required_window_h = required_central_h + extra_h
+
+        if not bool(getattr(self, "_dashboard_resize_guard", False)):
+            self.setMinimumSize(required_window_w, required_window_h)
+            need_fit = (
+                (not self.isMaximized())
+                and (not self.isFullScreen())
+                and (self.width() != required_window_w or self.height() != required_window_h)
+            )
+            if need_fit:
+                self._dashboard_resize_guard = True
+                try:
+                    self.resize(required_window_w, required_window_h)
+                finally:
+                    self._dashboard_resize_guard = False
+
+        x_col1 = margin
+        x_col2 = x_col1 + col_w[0] + col_gap
+        x_col3 = x_col2 + col_w[1] + col_gap
+
+        y_row1 = target_y
+        y_row2 = y_row1 + row1_h + row_gap
+        y_row3 = y_row2 + row2_h + row_gap
+
+        self._bartender_overview_rect = (x_col1, y_row1, col_w[0], combined_top_h)
+        self._voice_panel_layout_rect = (x_col2, y_row1, col_w[1], row1_h)
+        frame_r.setGeometry(x_col3, y_row1, col_w[2], row1_h)
+        frame_l.setGeometry(x_col2, y_row2, col_w[1], row2_h)
+        if frame_m is not None:
+            frame_m.setGeometry(x_col3, y_row2, col_w[2], row2_h)
+        frame_log.setGeometry(x_col1, y_row3, total_grid_w, log_h)
+
+        self._layout_bartender_overview_panel()
+        self._layout_voice_order_panel()
         self._layout_vision_widgets()
 
-        log_y = target_y + h_lr + TOP_STATUS_GAP + LOG_AREA_SHIFT_Y
-        log_h = max(260, self.centralwidget.height() - log_y - 8)
-        frame_log.setGeometry(frame_log.x(), log_y, frame_log.width(), log_h)
         if hasattr(self, "_log_clear_button") and self._log_clear_button is not None:
             btn_w = 96
             btn_h = 24
             self._log_clear_button.setGeometry(max(10, frame_log.width() - btn_w - 12), 8, btn_w, btn_h)
         if term is not None:
-            term.setGeometry(10, 40, frame_log.width() - 30, max(120, log_h - 50))
+            term.setGeometry(10, 40, max(120, frame_log.width() - 20), max(120, frame_log.height() - 50))
 
     def _layout_vision_widgets(self):
-        frame_l = getattr(self, "frame", None)
-        view = getattr(self, "yolo_view", None)
-        if frame_l is None or view is None:
-            return
-        top_y = 72
-        side = 10
-        bottom = 14
-        w = max(220, frame_l.width() - (side * 2))
-        calib_box = getattr(self, "calibration_group_box", None)
-        if calib_box is not None:
-            h = max(180, calib_box.y() - top_y - 8)
-        else:
-            h = max(180, frame_l.height() - top_y - bottom)
-        view.setGeometry(side, top_y, w, h)
-        frame_m = getattr(self, "frame_4", None)
-        view2 = getattr(self, "yolo_view_2", None)
-        if frame_m is not None and view2 is not None:
-            w2 = max(220, frame_m.width() - (side * 2))
-            calib_box2 = getattr(self, "calibration_group_box_2", None)
-            if calib_box2 is not None:
-                h2 = max(180, calib_box2.y() - top_y - 8)
-            else:
-                h2 = max(180, frame_m.height() - top_y - bottom)
-            view2.setGeometry(side, top_y, w2, h2)
+        def _layout_single(frame_obj, view_obj, calib_box):
+            if frame_obj is None or view_obj is None:
+                return
+            top_y = 93
+            side = 10
+            bottom = 14
+            gap = 8
+            min_view_h = 120
+            min_calib_h = 96
+            default_calib_h = 129
+            panel_w = max(220, frame_obj.width() - (side * 2))
+            panel_h = int(frame_obj.height())
+            view_h = max(min_view_h, panel_h - top_y - bottom)
+            if calib_box is not None:
+                enough_for_calib = panel_h >= (top_y + min_view_h + gap + min_calib_h + bottom)
+                if enough_for_calib:
+                    calib_h = min(default_calib_h, max(min_calib_h, int(panel_h * 0.28)))
+                    calib_y = max(top_y + min_view_h + gap, panel_h - bottom - calib_h)
+                    calib_box.setGeometry(side, calib_y, panel_w, calib_h)
+                    calib_box.show()
+                    view_h = max(min_view_h, calib_y - top_y - gap)
+                else:
+                    calib_box.hide()
+            view_obj.setGeometry(side, top_y, panel_w, view_h)
+
+        _layout_single(
+            getattr(self, "frame", None),
+            getattr(self, "yolo_view", None),
+            getattr(self, "calibration_group_box", None),
+        )
+        _layout_single(
+            getattr(self, "frame_4", None),
+            getattr(self, "yolo_view_2", None),
+            getattr(self, "calibration_group_box_2", None),
+        )
 
     def _setup_log_controls(self):
         frame_log = getattr(self, "frame_3", None)
@@ -1058,6 +4271,15 @@ class App(QMainWindow, form):
     def _on_top_status_toggle_changed(self, key: str, checked: bool):
         k = str(key)
         prev_on = bool(self._top_status_enabled.get(k, True))
+        if str(getattr(self, "_bartender_mode", "") or "").strip().lower() == "auto":
+            toggle = self._top_status_toggles.get(k)
+            if toggle is not None:
+                toggle.blockSignals(True)
+                toggle.setChecked(prev_on)
+                toggle.setText("ON" if prev_on else "OFF")
+                toggle.blockSignals(False)
+            self.append_log(f"[상태토글] 오토모드에서는 {k} ON/OFF를 변경할 수 없습니다.\n")
+            return
         on = bool(checked)
         self._top_status_enabled[k] = on
         toggle = self._top_status_toggles.get(k)
@@ -1110,6 +4332,7 @@ class App(QMainWindow, form):
             self._set_vision_panel_controls_enabled(2, on)
             self._sync_vision_render_timers()
         elif k == "robot" and (not on):
+            self._sync_robot_launch_from_toggle(reason="robot OFF")
             self._robot_cycle_ms = None
             if self.backend is not None and hasattr(self.backend, "stop_robot_state_subscriptions"):
                 try:
@@ -1119,6 +4342,7 @@ class App(QMainWindow, form):
                     self.append_log(f"[로봇] 구독 종료 실패: {e}\n")
             self._clear_robot_data_view()
         elif k == "robot" and on and (not prev_on):
+            self._sync_robot_launch_from_toggle(reason="robot ON")
             if self.backend is not None and hasattr(self.backend, "start_robot_state_subscriptions"):
                 try:
                     ok, msg = self.backend.start_robot_state_subscriptions()
@@ -1130,11 +4354,260 @@ class App(QMainWindow, form):
             self._last_positions_seen_at = None
             self._set_robot_controls_enabled(self.backend is not None and self.backend.is_ready())
         self.append_log(f"[상태토글] {k} {'활성화' if on else '비활성화'}\n")
+        if k in ("vision", "vision2"):
+            self._sync_sensor_launch_from_vision_toggles(reason=f"{k} {'ON' if on else 'OFF'}")
         if on and (not prev_on) and k in ("vision", "vision2"):
             self._restart_vision_after_toggle_enable(k)
         self._save_vision_serial_settings()
         self._refresh_robot_status()
         self._refresh_vision_status()
+
+    def _is_realsense_nodes_alive(self) -> bool:
+        try:
+            probe = subprocess.run(
+                ["pgrep", "-f", "realsense2_camera_node"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=0.8,
+                check=False,
+            )
+            return int(getattr(probe, "returncode", 1)) == 0 and bool(str(probe.stdout or "").strip())
+        except Exception:
+            return False
+
+    def _stop_sensor_launch_runtime(self, reason: str = "", kill_nodes: bool = True):
+        proc = getattr(self, "_sensor_launch_proc", None)
+        self._sensor_launch_proc = None
+        self._sensor_launch_signature = ""
+        if proc is not None and proc.poll() is None:
+            try:
+                proc.terminate()
+                proc.wait(timeout=3.0)
+            except Exception:
+                try:
+                    proc.kill()
+                    proc.wait(timeout=1.0)
+                except Exception:
+                    pass
+        if kill_nodes:
+            # system_launch에서 올린 기존 센서 노드도 함께 내린다.
+            for pattern in (
+                r"realsense2_camera_node.*__ns:=/camera2",
+                r"realsense2_camera_node.*__ns:=/camera",
+                r"realsense2_camera_node",
+            ):
+                try:
+                    subprocess.run(
+                        ["pkill", "-f", pattern],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        timeout=0.8,
+                        check=False,
+                    )
+                except Exception:
+                    pass
+            time.sleep(0.15)
+        if reason:
+            self.append_log(f"[센서] 런타임 센서 종료: {reason}\n")
+
+    def _start_sensor_launch_runtime(self, run_camera1: bool, run_camera2: bool, reason: str = "") -> bool:
+        launch_path = os.path.join(PROJECT_ROOT, "launch", "realsense_launch.py")
+        if not os.path.isfile(launch_path):
+            self.append_log(f"[센서] 재런치 실패: 런치 파일 없음 ({launch_path})\n")
+            return False
+        serial1 = self._normalize_serial_text(getattr(self, "_vision_assigned_serial_1", ""))
+        serial2 = self._normalize_serial_text(getattr(self, "_vision_assigned_serial_2", ""))
+        cmd = [
+            sys.executable,
+            launch_path,
+            f"run_camera1:={'true' if bool(run_camera1) else 'false'}",
+            f"run_camera2:={'true' if bool(run_camera2) else 'false'}",
+        ]
+        if serial1:
+            cmd.append(f"camera1_serial_no:=_{serial1}")
+        if serial2:
+            cmd.append(f"camera2_serial_no:=_{serial2}")
+        try:
+            proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                cwd=PROJECT_ROOT,
+                env=dict(os.environ),
+                start_new_session=True,
+            )
+        except Exception as exc:
+            self.append_log(f"[센서] 재런치 실패: {exc}\n")
+            return False
+        time.sleep(0.2)
+        if proc.poll() is not None:
+            self.append_log("[센서] 재런치 실패: 프로세스가 즉시 종료되었습니다.\n")
+            return False
+        self._sensor_launch_proc = proc
+        self._sensor_launch_signature = f"{int(bool(run_camera1))}:{int(bool(run_camera2))}:{serial1}:{serial2}"
+        self.append_log(
+            f"[센서] 런타임 센서 시작: cam1={serial1 or '-'}({bool(run_camera1)}), "
+            f"cam2={serial2 or '-'}({bool(run_camera2)})"
+            + (f", 사유={reason}" if reason else "")
+            + "\n"
+        )
+        return True
+
+    def _sync_sensor_launch_from_vision_toggles(self, reason: str = ""):
+        want_cam1 = bool(self._top_status_enabled.get("vision", True))
+        want_cam2 = bool(self._top_status_enabled.get("vision2", True))
+        serial1 = self._normalize_serial_text(getattr(self, "_vision_assigned_serial_1", ""))
+        serial2 = self._normalize_serial_text(getattr(self, "_vision_assigned_serial_2", ""))
+        desired_sig = f"{int(want_cam1)}:{int(want_cam2)}:{serial1}:{serial2}"
+
+        if (not want_cam1) and (not want_cam2):
+            self._stop_sensor_launch_runtime(reason=reason or "비전 토글 OFF", kill_nodes=True)
+            return
+
+        proc = getattr(self, "_sensor_launch_proc", None)
+        proc_alive = bool(proc is not None and proc.poll() is None)
+        nodes_alive = self._is_realsense_nodes_alive()
+        current_sig = str(getattr(self, "_sensor_launch_signature", "") or "")
+
+        if proc_alive and nodes_alive and (current_sig == desired_sig):
+            return
+
+        self._stop_sensor_launch_runtime(reason=(reason or "비전 설정 변경"), kill_nodes=True)
+        self._start_sensor_launch_runtime(want_cam1, want_cam2, reason=reason)
+
+    def _is_robot_nodes_alive(self) -> bool:
+        patterns = (
+            r"ros2_control_node.*__ns:=/dsr01",
+            r"dsr_bringup2_gazebo.launch.py",
+        )
+        for pattern in patterns:
+            try:
+                probe = subprocess.run(
+                    ["pgrep", "-f", pattern],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    timeout=0.8,
+                    check=False,
+                )
+                if int(getattr(probe, "returncode", 1)) == 0 and bool(str(probe.stdout or "").strip()):
+                    return True
+            except Exception:
+                continue
+        return False
+
+    def _stop_robot_launch_runtime(self, reason: str = "", kill_nodes: bool = True):
+        proc = getattr(self, "_robot_launch_proc", None)
+        self._robot_launch_proc = None
+        self._robot_launch_signature = ""
+        if proc is not None and proc.poll() is None:
+            try:
+                proc.terminate()
+                proc.wait(timeout=3.0)
+            except Exception:
+                try:
+                    proc.kill()
+                    proc.wait(timeout=1.0)
+                except Exception:
+                    pass
+        if kill_nodes:
+            for pattern in (
+                r"dsr_bringup2_gazebo.launch.py",
+                r"ros2_control_node.*__ns:=/dsr01",
+                r"spawner.*dsr",
+            ):
+                try:
+                    subprocess.run(
+                        ["pkill", "-f", pattern],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        timeout=0.8,
+                        check=False,
+                    )
+                except Exception:
+                    pass
+            time.sleep(0.2)
+        if reason:
+            self.append_log(f"[로봇] 런타임 로봇 런치 종료: {reason}\n")
+
+    def _start_robot_launch_runtime(self, reason: str = "") -> bool:
+        launch_path = os.path.join(PROJECT_ROOT, "launch", "system_launch.py")
+        if not os.path.isfile(launch_path):
+            self.append_log(f"[로봇] 런타임 로봇 런치 시작 실패: launch 파일 없음 ({launch_path})\n")
+            return False
+
+        mode = str(ROBOT_MODE_HINT or "real").strip().lower() or "real"
+        model = str(ROBOT_MODEL_HINT or "e0509").strip() or "e0509"
+        host = str(ROBOT_HOST_HINT or "110.120.1.68").strip() or "110.120.1.68"
+        rt_host = str(ROBOT_RT_HOST_HINT or "192.168.137.50").strip() or "192.168.137.50"
+        gz = str(ROBOT_GZ_HINT or ("false" if mode == "real" else "true")).strip().lower()
+        if gz not in ("true", "false"):
+            gz = "false" if mode == "real" else "true"
+
+        cmd = [
+            sys.executable,
+            launch_path,
+            "run_robot:=true",
+            "run_sensors:=false",
+            "run_frontend:=false",
+            "run_user_frontend:=false",
+            f"robot_mode:={mode}",
+            f"robot_model:={model}",
+            f"robot_host:={host}",
+            f"robot_rt_host:={rt_host}",
+            f"robot_gz:={gz}",
+        ]
+        try:
+            proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                cwd=PROJECT_ROOT,
+                env=dict(os.environ),
+                start_new_session=True,
+            )
+        except Exception as exc:
+            self.append_log(f"[로봇] 런타임 로봇 런치 시작 실패: {exc}\n")
+            return False
+        time.sleep(0.2)
+        if proc.poll() is not None:
+            self.append_log("[로봇] 런타임 로봇 런치 시작 실패: 프로세스가 즉시 종료되었습니다.\n")
+            return False
+        self._robot_launch_proc = proc
+        self._robot_launch_signature = f"{mode}:{model}:{host}:{rt_host}:{gz}"
+        self.append_log(
+            f"[로봇] 런타임 로봇 런치 시작: mode={mode}, model={model}, host={host}, rt_host={rt_host}, gz={gz}"
+            + (f", 사유={reason}" if reason else "")
+            + "\n"
+        )
+        return True
+
+    def _sync_robot_launch_from_toggle(self, reason: str = ""):
+        want_robot = bool(self._top_status_enabled.get("robot", True))
+        mode = str(ROBOT_MODE_HINT or "real").strip().lower() or "real"
+        model = str(ROBOT_MODEL_HINT or "e0509").strip() or "e0509"
+        host = str(ROBOT_HOST_HINT or "110.120.1.68").strip() or "110.120.1.68"
+        rt_host = str(ROBOT_RT_HOST_HINT or "192.168.137.50").strip() or "192.168.137.50"
+        gz = str(ROBOT_GZ_HINT or ("false" if mode == "real" else "true")).strip().lower()
+        if gz not in ("true", "false"):
+            gz = "false" if mode == "real" else "true"
+        desired_sig = f"{mode}:{model}:{host}:{rt_host}:{gz}"
+
+        if not want_robot:
+            self._stop_robot_launch_runtime(reason=reason or "로봇 토글 OFF", kill_nodes=True)
+            return
+
+        proc = getattr(self, "_robot_launch_proc", None)
+        proc_alive = bool(proc is not None and proc.poll() is None)
+        nodes_alive = self._is_robot_nodes_alive()
+        current_sig = str(getattr(self, "_robot_launch_signature", "") or "")
+
+        if nodes_alive and ((not proc_alive) or (current_sig == desired_sig)):
+            return
+
+        self._stop_robot_launch_runtime(reason=(reason or "로봇 설정 변경"), kill_nodes=True)
+        self._start_robot_launch_runtime(reason=reason)
 
     def _restart_vision_after_toggle_enable(self, key: str):
         if not UI_ENABLE_VISION:
@@ -1505,7 +4978,7 @@ class App(QMainWindow, form):
         )
         if last_camera_frame_at is None:
             return "확인중" if now < self._vision_mode_switch_grace_until(panel) else "끊김"
-        if (now - float(last_camera_frame_at)) > POSITION_STALE_SEC:
+        if (now - float(last_camera_frame_at)) > VISION_CAMERA_STALE_SEC:
             return "지연"
         return "정상 수신 중"
 
@@ -1543,6 +5016,11 @@ class App(QMainWindow, form):
         frame_l = getattr(self, "frame", None)
         frame_r = getattr(self, "frame_2", None)
         use_frame_alignment = frame_l is not None and frame_r is not None
+        frame_m = getattr(self, "frame_4", None)
+        if use_frame_alignment and frame_m is not None:
+            # 3열 재배치에서 frame_4/robot이 같은 x축을 공유하면 슬롯 기반 배치를 사용한다.
+            if abs(int(frame_m.x()) - int(frame_r.x())) <= 1:
+                use_frame_alignment = False
 
         left = 10
         y = 4
@@ -1568,7 +5046,6 @@ class App(QMainWindow, form):
                 return
 
             v_x = frame_l.x() - left
-            frame_m = getattr(self, "frame_4", None)
             m_x = frame_m.x() - left if frame_m is not None else None
             m_w = frame_m.width() if frame_m is not None else None
             r_x = frame_r.x() - left
@@ -1673,13 +5150,20 @@ class App(QMainWindow, form):
         text.setText(f"{title}: {state_text}")
 
     def _tick_top_status_animation(self):
-        if not self._top_status_state_cache:
-            return
-        for key, payload in list(self._top_status_state_cache.items()):
-            if not isinstance(payload, tuple) or len(payload) != 2:
-                continue
-            state_text, severity = payload
-            self._set_top_status(key, state_text, severity)
+        if self._top_status_state_cache:
+            for key, payload in list(self._top_status_state_cache.items()):
+                if not isinstance(payload, tuple) or len(payload) != 2:
+                    continue
+                state_text, severity = payload
+                self._set_top_status(key, state_text, severity)
+        voice_state = str(getattr(self, "_voice_order_status_text", "") or "").strip()
+        if voice_state:
+            self._set_voice_order_status(
+                voice_state,
+                str(getattr(self, "_voice_order_status_severity", "info") or "info"),
+            )
+        self._update_bartender_mode_ui()
+        self._refresh_bartender_sequence_styles()
 
     def _set_robot_controls_enabled(self, enabled: bool):
         enabled = bool(enabled)
@@ -1715,6 +5199,8 @@ class App(QMainWindow, form):
             self._print_pos_button.setEnabled(normal_enabled)
         if hasattr(self, "_reset_button") and self._reset_button is not None:
             self._reset_button.setEnabled(normal_enabled)
+        if hasattr(self, "_emergency_stop_button") and self._emergency_stop_button is not None:
+            self._emergency_stop_button.setEnabled(normal_enabled)
         if hasattr(self, "_home_button") and self._home_button is not None:
             self._home_button.setEnabled(normal_enabled)
         if hasattr(self, "_home_save_button") and self._home_save_button is not None:
@@ -1793,6 +5279,10 @@ class App(QMainWindow, form):
         self._reset_thread = None
         self._reset_worker = None
 
+    def _clear_motion_stop_worker_refs(self):
+        self._motion_stop_thread = None
+        self._motion_stop_worker = None
+
     def _start_reset_async(self):
         if self.backend is None:
             self.append_log("[리셋] 백엔드 초기화 중입니다.\n")
@@ -1830,6 +5320,40 @@ class App(QMainWindow, form):
         self.append_log(f"[리셋] 실패: {err}\n")
         self.append_log(tb + "\n")
         self._set_robot_controls_enabled(self.backend is not None and self.backend.is_ready())
+
+    def _start_motion_stop_async(self, stop_mode: int = 2):
+        if self.backend is None:
+            self.append_log("[정지] 백엔드 초기화 중입니다.\n")
+            return
+        if self._motion_stop_thread is not None:
+            self.append_log("[정지] 이미 요청 처리 중입니다.\n")
+            return
+        if not hasattr(self.backend, "send_motion_stop"):
+            self.append_log("[정지] 백엔드가 모션정지 기능을 지원하지 않습니다.\n")
+            return
+
+        self.append_log(f"[정지] 요청 전송(stop_mode={int(stop_mode)}), 응답 대기 중...\n")
+        self._motion_stop_thread = QThread(self)
+        self._motion_stop_worker = BackendMotionStopWorker(self.backend, stop_mode=int(stop_mode))
+        self._motion_stop_worker.moveToThread(self._motion_stop_thread)
+
+        self._motion_stop_thread.started.connect(self._motion_stop_worker.run)
+        self._motion_stop_worker.finished.connect(self._on_motion_stop_finished)
+        self._motion_stop_worker.failed.connect(self._on_motion_stop_failed)
+
+        self._motion_stop_worker.finished.connect(lambda *_: self._motion_stop_thread.quit())
+        self._motion_stop_worker.failed.connect(lambda *_: self._motion_stop_thread.quit())
+        self._motion_stop_thread.finished.connect(self._motion_stop_thread.deleteLater)
+        self._motion_stop_thread.finished.connect(self._motion_stop_worker.deleteLater)
+        self._motion_stop_thread.finished.connect(self._clear_motion_stop_worker_refs)
+        self._motion_stop_thread.start()
+
+    def _on_motion_stop_finished(self, ok, msg):
+        self.append_log(f"[정지] {msg}\n")
+
+    def _on_motion_stop_failed(self, err, tb):
+        self.append_log(f"[정지] 실패: {err}\n")
+        self.append_log(tb + "\n")
 
     def _on_backend_progress(self, percent, message, elapsed_sec):
         self.append_log(f"[초기화] {int(percent)}% {message} ({elapsed_sec:.1f}s)\n")
@@ -1869,10 +5393,17 @@ class App(QMainWindow, form):
 
     def _refresh_status(self):
         # Backward-compat wrapper
+        seq_snapshot = self._pull_bartender_sequence_snapshot()
+        if isinstance(seq_snapshot, dict):
+            self._apply_bartender_sequence_snapshot(seq_snapshot)
         self._refresh_robot_status()
         self._refresh_vision_status()
 
     def _refresh_robot_status(self):
+        seq_snapshot = self._pull_bartender_sequence_snapshot()
+        if isinstance(seq_snapshot, dict):
+            self._apply_bartender_sequence_snapshot(seq_snapshot)
+
         if not bool(self._top_status_enabled.get("robot", True)):
             self._robot_cycle_ms = None
             self._set_robot_controls_enabled(False)
@@ -2054,7 +5585,7 @@ class App(QMainWindow, form):
         calib_on_any = bool(getattr(self, "_calibration_mode_enabled_1", False) or getattr(self, "_calibration_mode_enabled_2", False))
         last_camera_at = self._last_camera_frame_at_2 if panel == 2 else self._last_camera_frame_at_1
         stale_vision = bool(vision_on) and (
-            (last_camera_at is None) or ((now - float(last_camera_at)) > 3.0)
+            (last_camera_at is None) or ((now - float(last_camera_at)) > VISION_CAMERA_STALE_SEC)
         )
         if stale_vision and ((now - self._vision_rebind_last_try_at) > 8.0):
             retry_needed = True
@@ -2307,7 +5838,18 @@ class App(QMainWindow, form):
 
     def _on_rosout_msg(self, msg):
         name = str(getattr(msg, "name", ""))
-        if name not in ("bartender_backend", "bartender_robot_app"):
+        ros_log_allow = {
+            "bartender_backend",
+            "bartender_robot_app",      # legacy
+            "bartender_robot_bridge",
+            "bartender_robot_mode",     # legacy
+            "bartender_mode_monitor",
+            str(os.environ.get("BARTENDER_BACKEND_NODE_NAME", "") or "").strip(),
+            str(os.environ.get("BARTENDER_DSR_BRIDGE_NODE_NAME", "") or "").strip(),
+            str(os.environ.get("BARTENDER_MODE_MONITOR_NODE_NAME", "") or "").strip(),
+        }
+        ros_log_allow.discard("")
+        if name not in ros_log_allow:
             return
 
         level = int(getattr(msg, "level", 0))
@@ -2563,7 +6105,8 @@ class App(QMainWindow, form):
         self._vision_cycle_label = getattr(self, "vision_cycle_label", None)
         self._vision_cycle_label_2 = getattr(self, "vision_cycle_label_2", None)
         self._robot_cycle_label = getattr(self, "robot_cycle_label", None)
-        style = f"color: #555; font-size: {max(7, UI_TERMINAL_FONT_SIZE - 1)}pt;"
+        self._voice_order_cycle_label = getattr(self, "_voice_order_cycle_label", None)
+        style = f"color: #555; font-size: {max(6, UI_TERMINAL_FONT_SIZE)}pt;"
         if self._vision_cycle_label is not None:
             self._vision_cycle_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
             self._vision_cycle_label.setStyleSheet(style)
@@ -2575,6 +6118,10 @@ class App(QMainWindow, form):
         if self._robot_cycle_label is not None:
             self._robot_cycle_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
             self._robot_cycle_label.setStyleSheet(style)
+        if self._voice_order_cycle_label is not None:
+            self._voice_order_cycle_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            self._voice_order_cycle_label.setStyleSheet(style)
+            self._voice_order_cycle_label.show()
 
         serial_style = style
         self._vision_serial_label = getattr(self, "vision_serial_label", None)
@@ -2754,6 +6301,12 @@ class App(QMainWindow, form):
                 self._robot_cycle_label.setText("업데이트: - ms")
             else:
                 self._robot_cycle_label.setText(f"업데이트: {self._robot_cycle_ms:.1f} ms")
+        if hasattr(self, "_voice_order_cycle_label") and self._voice_order_cycle_label is not None:
+            if self._voice_order_cycle_ms is None:
+                self._voice_order_cycle_label.setText("업데이트: - ms")
+            else:
+                self._voice_order_cycle_label.setText(f"업데이트: {self._voice_order_cycle_ms:.1f} ms")
+        self._refresh_voice_order_webui_badge()
         self._refresh_vision_serial_labels()
 
     def performance_snapshot(self):
@@ -2784,10 +6337,9 @@ class App(QMainWindow, form):
 
     def _on_change_vision_camera(self, panel_index: int):
         discovered = self._discover_connected_camera_serials()
-        for s in discovered:
-            if s not in self._available_camera_serials:
-                self._available_camera_serials.append(s)
-        options = [s for s in self._available_camera_serials if s]
+        # 카메라 변경 목록은 "현재 검색된" 시리얼만 노출한다.
+        self._available_camera_serials = [s for s in discovered if s]
+        options = list(self._available_camera_serials)
         if not options:
             QMessageBox.warning(self, "카메라 변경", "검색된 카메라 시리얼이 없습니다.")
             return
@@ -2837,10 +6389,19 @@ class App(QMainWindow, form):
         self._vision_drop_frames_until_2 = now + 1.2
         self._vision_state_text = "전환중"
         self._vision_state_text_2 = "전환중"
+        self._sync_sensor_launch_from_vision_toggles(reason="카메라 시리얼 변경")
         self._sync_calibration_processes()
         self._rebind_external_vision_bridge_for_mode()
         self.append_log(
             f"[{self._vision_log_tag()}] 카메라 할당 변경: 비전1={self._vision_assigned_serial_1}, 비전2={self._vision_assigned_serial_2} (런타임 camera={self._runtime_camera_serial_1}, camera2={self._runtime_camera_serial_2})\n"
+        )
+        self.append_log(
+            f"[{self._vision_log_tag()}] 카메라 시리얼 변경 저장 완료: 센서 런타임을 재시작해 즉시 반영했습니다.\n"
+        )
+        QMessageBox.information(
+            self,
+            "카메라 변경",
+            "시리얼 변경을 저장했습니다.\n센서 런타임을 재시작하여 현재 설정을 즉시 반영했습니다.",
         )
 
     def _setup_position_table_common(self, table: QTableWidget, keys):
@@ -2976,6 +6537,11 @@ class App(QMainWindow, form):
             ["좌표 출력", "좌표", "출력"],
         )
         self._reset_button = _pick_button(panel, ["reset_button", "robot_reset_button"], ["리셋", "초기화"])
+        self._emergency_stop_button = _pick_button(
+            panel,
+            ["emergency_stop_button", "robot_emergency_stop_button"],
+            ["정지", "긴급정지", "긴급 정지", "비상정지", "비상 정지"],
+        )
         self._home_button = _pick_button(panel, ["home_button", "move_home_button"], ["홈위치", "홈", "원점"])
         self._home_save_button = _pick_button(
             panel,
@@ -3148,6 +6714,12 @@ class App(QMainWindow, form):
             self._print_pos_button.clicked.connect(self.on_move_joint_dialog)
         if self._reset_button is not None:
             self._reset_button.clicked.connect(self.on_reset_robot)
+        if self._emergency_stop_button is not None:
+            try:
+                self._emergency_stop_button.clicked.disconnect()
+            except Exception:
+                pass
+            self._emergency_stop_button.clicked.connect(self.on_stop_motion)
         if self._home_button is not None:
             self._home_button.clicked.connect(self.on_move_home)
         if self._home_save_button is not None:
@@ -3261,6 +6833,7 @@ class App(QMainWindow, form):
             self.pushButton,
             self._print_pos_button,
             self._reset_button,
+            self._emergency_stop_button,
             self._gripper_range_title_label,
             self._gripper_range_value_label,
             self._gripper_stroke_input,
@@ -3310,6 +6883,7 @@ class App(QMainWindow, form):
             self.pushButton,
             self._print_pos_button,
             self._reset_button,
+            self._emergency_stop_button,
             self._tool_change_button,
             self._motion_speed_title_label,
             self._motion_speed_slider,
@@ -3346,16 +6920,38 @@ class App(QMainWindow, form):
         self._motion_speed_percent = speed
         if self._motion_speed_title_label is not None:
             self._motion_speed_title_label.setText("이동속도 (0~100%)")
+        if self._motion_speed_slider is not None:
+            self._motion_speed_slider.blockSignals(True)
+            self._motion_speed_slider.setValue(int(speed))
+            self._motion_speed_slider.blockSignals(False)
         if self._motion_speed_value_label is not None:
             self._motion_speed_value_label.setText(f"{speed}%")
+        if self._bartender_speed_title_label is not None:
+            self._bartender_speed_title_label.setText("로봇 시퀀스 속도 (0~100%)")
+        if self._bartender_speed_slider is not None:
+            self._bartender_speed_slider.blockSignals(True)
+            self._bartender_speed_slider.setValue(int(speed))
+            self._bartender_speed_slider.blockSignals(False)
+        if self._bartender_speed_value_label is not None:
+            self._bartender_speed_value_label.setText(f"{speed}%")
 
     def _on_motion_speed_changed(self, value):
         self._motion_speed_percent = self._clamp_motion_speed_percent(value)
         self._sync_motion_speed_widgets()
 
+    def _on_bartender_motion_speed_changed(self, value):
+        self._motion_speed_percent = self._clamp_motion_speed_percent(value)
+        self._sync_motion_speed_widgets()
+
     def _motion_speed_for_command(self):
         speed = self._clamp_motion_speed_percent(
-            self._motion_speed_slider.value() if self._motion_speed_slider is not None else self._motion_speed_percent
+            self._motion_speed_slider.value()
+            if self._motion_speed_slider is not None
+            else (
+                self._bartender_speed_slider.value()
+                if self._bartender_speed_slider is not None
+                else self._motion_speed_percent
+            )
         )
         self._motion_speed_percent = speed
         if speed <= 0:
@@ -4510,6 +8106,58 @@ class App(QMainWindow, form):
 
         def _resolve_sequence_storage_key(row_key: str):
             key_text = str(row_key or "").strip()
+            if key_text == "initial":
+                explicit_keys = (
+                    f"{prefix}initial_enabled",
+                    f"{prefix}initial_j",
+                    f"{prefix}initial_pose6",
+                    f"{prefix}initial_xyzabc",
+                )
+                if any(rows.get(name) for name in explicit_keys):
+                    return "initial"
+                legacy_home_keys = (
+                    f"{prefix}home_enabled",
+                    f"{prefix}home_j",
+                    f"{prefix}home_pose6",
+                    f"{prefix}home_xyzabc",
+                )
+                if any(rows.get(name) for name in legacy_home_keys):
+                    return "home"
+                legacy_end_home_keys = (
+                    f"{prefix}end_home_enabled",
+                    f"{prefix}end_home_j",
+                    f"{prefix}end_home_pose6",
+                    f"{prefix}end_home_xyzabc",
+                )
+                if any(rows.get(name) for name in legacy_end_home_keys):
+                    return "end_home"
+                return "initial"
+            if key_text == "end":
+                explicit_keys = (
+                    f"{prefix}end_enabled",
+                    f"{prefix}end_j",
+                    f"{prefix}end_pose6",
+                    f"{prefix}end_xyzabc",
+                )
+                if any(rows.get(name) for name in explicit_keys):
+                    return "end"
+                legacy_end_home_keys = (
+                    f"{prefix}end_home_enabled",
+                    f"{prefix}end_home_j",
+                    f"{prefix}end_home_pose6",
+                    f"{prefix}end_home_xyzabc",
+                )
+                if any(rows.get(name) for name in legacy_end_home_keys):
+                    return "end_home"
+                legacy_home_keys = (
+                    f"{prefix}home_enabled",
+                    f"{prefix}home_j",
+                    f"{prefix}home_pose6",
+                    f"{prefix}home_xyzabc",
+                )
+                if any(rows.get(name) for name in legacy_home_keys):
+                    return "home"
+                return "end"
             if key_text not in ("return1", "return2"):
                 return key_text
             explicit_keys = (
@@ -4543,7 +8191,7 @@ class App(QMainWindow, form):
                 "target_joint": None,
                 "target_text": "-",
             }
-            if key in ("home", "end_home"):
+            if key in ("initial", "end"):
                 entry["enabled"] = self._parse_bool_text(((rows.get(f"{prefix}{storage_key}_enabled") or ["1"])[0]), default=True)
                 entry["move_kind"] = "home"
                 entry["target_joint"] = home_posj
@@ -4580,15 +8228,15 @@ class App(QMainWindow, form):
         if enabled is not None:
             rows[f"{prefix}_enabled"] = ["1" if bool(enabled) else "0"]
 
-        if key in ("home", "end_home"):
+        if key in ("initial", "end"):
             if joints is not None:
                 if self.backend is None or not hasattr(self.backend, "set_home_posj"):
-                    return False, "백엔드 홈 저장 기능을 지원하지 않습니다."
+                    return False, "백엔드 초기위치 저장 기능을 지원하지 않습니다."
                 ok_home, msg_home = self.backend.set_home_posj(joints)
                 if not ok_home:
                     return False, msg_home
             self._save_parameter_rows(rows)
-            return True, "홈위치 설정 저장 완료"
+            return True, "초기위치 설정 저장 완료"
 
         if joints is not None:
             joint_vals = self._parse_float_values(joints, expected_len=6)
@@ -5364,7 +9012,7 @@ class App(QMainWindow, form):
             if not ok_save:
                 QMessageBox.warning(dialog, "캘리브레이션", msg_save, QMessageBox.Ok)
                 return
-            if row_state["data"]["key"] in ("home", "end_home"):
+            if row_state["data"]["key"] in ("initial", "end"):
                 row_state["data"]["move_kind"] = "home"
                 row_state["data"]["target_joint"] = list(posj)
                 row_state["data"]["target_pose6"] = None
@@ -5416,7 +9064,7 @@ class App(QMainWindow, form):
                 if not ok_save:
                     QMessageBox.warning(dialog, "캘리브레이션", msg_save, QMessageBox.Ok)
                     return
-                if seq_row["key"] in ("home", "end_home"):
+                if seq_row["key"] in ("initial", "end"):
                     seq_row["move_kind"] = "home"
                     seq_row["target_pose6"] = None
                 else:
@@ -5775,24 +9423,113 @@ class App(QMainWindow, form):
 
     def _discover_connected_camera_serials(self):
         serials = []
-        try:
-            proc = subprocess.run(
-                ["rs-enumerate-devices", "-s"],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                timeout=2.5,
-                check=False,
-            )
-            text = (proc.stdout or "") + "\n" + (proc.stderr or "")
-            for line in text.splitlines():
+        rs_cmd_candidates = [
+            ["rs-enumerate-devices", "-s"],
+            ["/opt/ros/jazzy/bin/rs-enumerate-devices", "-s"],
+        ]
+        for cmd in rs_cmd_candidates:
+            try:
+                env = dict(os.environ)
+                prev_ld = str(env.get("LD_LIBRARY_PATH", "") or "")
+                extra_ld = ["/opt/ros/jazzy/lib/x86_64-linux-gnu", "/opt/ros/jazzy/lib"]
+                merged_ld = ":".join([p for p in extra_ld + [prev_ld] if p])
+                if merged_ld:
+                    env["LD_LIBRARY_PATH"] = merged_ld
+                proc = subprocess.run(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    timeout=2.5,
+                    check=False,
+                    env=env,
+                )
+            except Exception:
+                continue
+            # rs-enumerate-devices의 표준 출력(장치 목록)만 우선 파싱한다.
+            # stderr에는 내부 로그/스레드 ID 숫자가 섞여 오탐이 발생할 수 있다.
+            text = str(proc.stdout or "")
+            if not text.strip():
+                text = (proc.stdout or "") + "\n" + (proc.stderr or "")
+            for line in str(text).splitlines():
                 low = line.lower()
-                if "serial number" not in low:
+                # 1) "Serial Number: xxxxx" 형식
+                if "serial number" in low and ":" in line:
+                    raw = line.split(":", 1)[1].strip()
+                    serial = self._normalize_serial_text(raw)
+                    if serial.isdigit() and 10 <= len(serial) <= 14 and serial not in serials:
+                        serials.append(serial)
                     continue
-                if ":" not in line:
+                # 2) 테이블 형식: "Intel RealSense D455F  252222300723  5.17.0.10"
+                m = re.search(
+                    r"Intel\s+RealSense.*?\s(?P<sn>\d{10,14})\s+\d+\.\d+\.\d+\.\d+",
+                    line,
+                    flags=re.IGNORECASE,
+                )
+                if m:
+                    serial = self._normalize_serial_text(m.group("sn"))
+                    if serial and serial not in serials:
+                        serials.append(serial)
+            if serials:
+                break
+        if serials:
+            return serials
+
+        # Fallback 1) /dev/v4l/by-id 링크명에서 RealSense 시리얼 추출
+        try:
+            for path in sorted(glob.glob("/dev/v4l/by-id/*")):
+                name = os.path.basename(path)
+                low = name.lower()
+                if ("realsense" not in low) and ("intel" not in low):
                     continue
-                raw = line.split(":", 1)[1].strip()
-                serial = self._normalize_serial_text(raw)
+                head = name.split("-video-index", 1)[0]
+                tokens = [t for t in head.split("_") if t]
+                serial = ""
+                for tok in reversed(tokens):
+                    t = self._normalize_serial_text(tok)
+                    if len(t) >= 6 and t.isdigit():
+                        serial = t
+                        break
+                if serial and serial not in serials:
+                    serials.append(serial)
+        except Exception:
+            pass
+        if serials:
+            return serials
+
+        # Fallback 2) udevadm 속성에서 Intel(8086) 장치 시리얼 추출
+        try:
+            for dev in sorted(glob.glob("/dev/video*")):
+                try:
+                    proc = subprocess.run(
+                        ["udevadm", "info", "--query=property", "--name", dev],
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        text=True,
+                        timeout=0.7,
+                        check=False,
+                    )
+                except Exception:
+                    continue
+                if int(getattr(proc, "returncode", 1)) != 0:
+                    continue
+                props = {}
+                for line in str(proc.stdout or "").splitlines():
+                    if "=" not in line:
+                        continue
+                    k, v = line.split("=", 1)
+                    props[str(k).strip()] = str(v).strip()
+                if str(props.get("ID_VENDOR_ID", "")).strip() != "8086":
+                    continue
+                serial = self._normalize_serial_text(props.get("ID_SERIAL_SHORT", ""))
+                if not serial:
+                    raw_serial = self._normalize_serial_text(props.get("ID_SERIAL", ""))
+                    if raw_serial:
+                        for tok in reversed([t for t in raw_serial.replace("-", "_").split("_") if t]):
+                            t = self._normalize_serial_text(tok)
+                            if len(t) >= 6 and t.isdigit():
+                                serial = t
+                                break
                 if serial and serial not in serials:
                     serials.append(serial)
         except Exception:
@@ -5842,6 +9579,7 @@ class App(QMainWindow, form):
         self._top_status_enabled["vision"] = _as_bool("top_status_vision_enabled", True)
         self._top_status_enabled["vision2"] = _as_bool("top_status_vision2_enabled", True)
         self._top_status_enabled["robot"] = _as_bool("top_status_robot_enabled", True)
+        self._voice_order_enabled = _as_bool("top_status_voice_enabled", False)
         # Do not auto-restore calibration ON state on startup.
         self._calibration_mode_enabled_1 = False
         self._calibration_mode_enabled_2 = False
@@ -5854,6 +9592,13 @@ class App(QMainWindow, form):
             toggle.setChecked(on)
             toggle.setText("ON" if on else "OFF")
             toggle.blockSignals(False)
+        voice_toggle = getattr(self, "_voice_order_connection_toggle", None)
+        if voice_toggle is not None:
+            voice_toggle.blockSignals(True)
+            voice_toggle.setChecked(bool(self._voice_order_enabled))
+            voice_toggle.setText("ON" if bool(self._voice_order_enabled) else "OFF")
+            voice_toggle.blockSignals(False)
+            self._set_voice_order_connection_state(bool(self._voice_order_enabled))
 
     def _save_vision_serial_settings(self):
         rows = self._load_parameter_rows()
@@ -5864,6 +9609,9 @@ class App(QMainWindow, form):
         rows["top_status_vision_enabled"] = ["1" if bool(self._top_status_enabled.get("vision", True)) else "0"]
         rows["top_status_vision2_enabled"] = ["1" if bool(self._top_status_enabled.get("vision2", True)) else "0"]
         rows["top_status_robot_enabled"] = ["1" if bool(self._top_status_enabled.get("robot", True)) else "0"]
+        voice_toggle = getattr(self, "_voice_order_connection_toggle", None)
+        voice_on = bool(voice_toggle.isChecked()) if voice_toggle is not None else bool(self._voice_order_enabled)
+        rows["top_status_voice_enabled"] = ["1" if voice_on else "0"]
         # Keep startup behavior deterministic: calibration mode starts OFF after restart.
         rows["vision1_calibration_enabled"] = ["0"]
         rows["vision2_calibration_enabled"] = ["0"]
@@ -6005,54 +9753,27 @@ class App(QMainWindow, form):
 
     def _assigned_topic_for_serial(self, serial):
         slot = self._runtime_camera_slot_for_serial(serial)
-        return "/camera2/camera/color/image_raw" if slot == 2 else CALIB_VISION_TOPIC_PRIMARY
+        return "/camera/camera_2/color/image_raw" if slot == 2 else CALIB_VISION_TOPIC_PRIMARY
 
     def _assigned_depth_topic_for_serial(self, serial, node=None):
         slot = self._runtime_camera_slot_for_serial(serial)
+        _ = node
         if slot == 2:
-            candidates = [
-                "/camera2/camera/aligned_depth_to_color/image_raw",
-                "/camera2/aligned_depth_to_color/image_raw",
-                "/camera2/camera/depth/image_rect_raw",
-                "/camera2/depth/image_rect_raw",
-                "/camera2/camera/depth/image_raw",
-            ]
-        else:
-            candidates = [
-                "/camera/camera/aligned_depth_to_color/image_raw",
-                "/camera/aligned_depth_to_color/image_raw",
-                "/camera/camera/depth/image_rect_raw",
-                "/camera/depth/image_rect_raw",
-                "/camera/camera/depth/image_raw",
-            ]
-        if node is not None:
-            for t in candidates:
-                if self._is_topic_alive(node, t):
-                    return t
-        return candidates[0]
+            return "/camera/camera_2/aligned_depth_to_color/image_raw"
+        return "/camera/camera_1/aligned_depth_to_color/image_raw"
 
     def _assigned_raw_topic_for_serial(self, serial, node):
         slot = self._runtime_camera_slot_for_serial(serial)
+        _ = node
         if slot == 2:
-            topic_primary = "/camera2/camera/color/image_raw"
-            topic_fallback = "/camera2/color/image_raw"
-            for t in (topic_primary, topic_fallback):
-                if node is not None and self._is_image_topic_alive(node, t):
-                    return t
-            return topic_primary
-        return self._resolve_calib_vision_topic(node)
+            return "/camera/camera_2/color/image_raw"
+        return CALIB_VISION_TOPIC_PRIMARY
 
     def _assigned_info_topic_for_serial(self, serial, node):
         slot = self._runtime_camera_slot_for_serial(serial)
+        _ = node
         if slot == 2:
-            for t in ("/camera2/camera/color/camera_info", "/camera2/color/camera_info"):
-                if self._is_topic_alive(node, t):
-                    return t
-            return "/camera2/camera/color/camera_info"
-        if self._is_topic_alive(node, CALIB_CAMERA_INFO_TOPIC_PRIMARY):
-            return CALIB_CAMERA_INFO_TOPIC_PRIMARY
-        if self._is_topic_alive(node, CALIB_CAMERA_INFO_TOPIC_FALLBACK):
-            return CALIB_CAMERA_INFO_TOPIC_FALLBACK
+            return "/camera/camera_2/color/camera_info"
         return CALIB_CAMERA_INFO_TOPIC_PRIMARY
 
     def _vision_panel_needs_depth(self, panel_index: int = 1):
@@ -6191,12 +9912,6 @@ class App(QMainWindow, form):
 
     def _is_image_topic_alive(self, node, topic_name):
         return self._is_topic_alive(node, topic_name)
-
-    def _resolve_calib_vision_topic(self, node):
-        for topic_name in (CALIB_VISION_TOPIC_PRIMARY, CALIB_VISION_TOPIC_FALLBACK):
-            if self._is_image_topic_alive(node, topic_name):
-                return topic_name
-        return CALIB_VISION_TOPIC_PRIMARY
 
     def _calibration_output_meta_topic(self, panel_index: int = 1):
         return CALIB_OUTPUT_META_TOPIC_2 if int(panel_index) == 2 else CALIB_OUTPUT_META_TOPIC_1
@@ -6362,8 +10077,10 @@ class App(QMainWindow, form):
             return None
         serial = self._vision_assigned_serial_2 if panel == 2 else self._vision_assigned_serial_1
         script_name = "glass_fill_level.py" if panel == 2 else "drink_detection.py"
+        vision_py = str(os.environ.get("BARTENDER_VISION_PYTHON", "") or "").strip()
+        py_exec = vision_py if (vision_py and os.path.isfile(vision_py)) else sys.executable
         return [
-            sys.executable,
+            py_exec,
             os.path.join(PROJECT_ROOT, "src", "vision", script_name),
             "--image-topic",
             self._assigned_raw_topic_for_serial(serial, node),
@@ -6420,7 +10137,7 @@ class App(QMainWindow, form):
             self._external_vision_proc_1 = proc
             self._external_vision_cmd_1 = list(cmd)
             self._external_vision_started_by_ui_1 = True
-        self.append_log(f"[비전{panel}] 메타 프로세스 시작\n")
+        self.append_log(f"[비전{panel}] 메타 프로세스 시작 (python={cmd[0]})\n")
         return True
 
     def _stop_external_vision_process_panel(self, panel_index: int):
@@ -7706,6 +11423,10 @@ class App(QMainWindow, form):
             self._last_camera_frame_at_1 = now
             if now < float(getattr(self, "_vision_drop_frames_until_1", 0.0)):
                 return
+            if VISION_DECODE_MIN_INTERVAL_SEC > 0.0 and now < float(getattr(self, "_vision_decode_next_at_1", 0.0)):
+                return
+            if VISION_DECODE_MIN_INTERVAL_SEC > 0.0:
+                self._vision_decode_next_at_1 = now + float(VISION_DECODE_MIN_INTERVAL_SEC)
 
             h = int(msg.height)
             w = int(msg.width)
@@ -7753,6 +11474,10 @@ class App(QMainWindow, form):
             self._last_camera_frame_at_2 = now
             if now < float(getattr(self, "_vision_drop_frames_until_2", 0.0)):
                 return
+            if VISION_DECODE_MIN_INTERVAL_SEC > 0.0 and now < float(getattr(self, "_vision_decode_next_at_2", 0.0)):
+                return
+            if VISION_DECODE_MIN_INTERVAL_SEC > 0.0:
+                self._vision_decode_next_at_2 = now + float(VISION_DECODE_MIN_INTERVAL_SEC)
             h = int(msg.height)
             w = int(msg.width)
             step = int(msg.step)
@@ -8542,6 +12267,8 @@ class App(QMainWindow, form):
         super().resizeEvent(event)
         if not UI_USE_DESIGN_GEOMETRY:
             self._layout_main_frames()
+        self._layout_voice_order_panel()
+        self._layout_bartender_overview_panel()
         self._reposition_top_status_row()
         self._reposition_cycle_labels()
         self._layout_control_buttons()
@@ -8798,6 +12525,13 @@ class App(QMainWindow, form):
     def on_reset_robot(self):
         self._start_reset_async()
 
+    def on_stop_motion(self):
+        self._start_motion_stop_async(stop_mode=2)
+
+    def on_emergency_stop(self):
+        # backward compatibility alias
+        self.on_stop_motion()
+
     def on_move_home(self):
         if self.backend is None:
             self.append_log("[홈] 백엔드 초기화 중입니다.\n")
@@ -8876,6 +12610,8 @@ class App(QMainWindow, form):
 
     def closeEvent(self, event):
         self._closing = True
+        self._bartender_sequence_running = False
+        backend_shutdown_done = False
         try:
             if hasattr(self, "_log_timer") and self._log_timer is not None:
                 self._log_timer.stop()
@@ -8894,12 +12630,36 @@ class App(QMainWindow, form):
             if hasattr(self, "_current_tool_timer") and self._current_tool_timer is not None:
                 self._current_tool_timer.stop()
 
+            if self.backend is not None and hasattr(self.backend, "stop_bartender_sequence"):
+                try:
+                    self.backend.stop_bartender_sequence(reason="개발자 UI 종료")
+                except Exception:
+                    pass
+            # 중요: 런치 하위 노드를 강제 종료하기 전에 backend.shutdown()을 먼저 호출해
+            # drl_start 서비스가 살아있는 동안 그리퍼 terminate를 선행한다.
+            if self.backend is not None:
+                try:
+                    self.backend.shutdown()
+                    backend_shutdown_done = True
+                except Exception:
+                    pass
+            self._stop_voice_order_mic_test_monitor("앱 종료")
+            self._stop_voice_cycle_worker(reason="앱 종료")
+            self._stop_voice_order_worker(reason="앱 종료")
             if self._reset_thread is not None:
                 self._reset_thread.quit()
                 if not self._reset_thread.wait(800):
                     self._reset_thread.terminate()
                     self._reset_thread.wait(300)
+            if self._motion_stop_thread is not None:
+                self._motion_stop_thread.quit()
+                if not self._motion_stop_thread.wait(500):
+                    self._motion_stop_thread.terminate()
+                    self._motion_stop_thread.wait(200)
             self._stop_vision_compose_workers()
+            # 앱 종료 시 런타임으로 띄운 launch 하위 노드까지 정리한다.
+            self._stop_sensor_launch_runtime(reason="앱 종료", kill_nodes=True)
+            self._stop_robot_launch_runtime(reason="앱 종료", kill_nodes=True)
             self._stop_yolo_camera()
             self._stop_calibration_process(1)
             self._stop_calibration_process(2)
@@ -8911,7 +12671,7 @@ class App(QMainWindow, form):
                 if not self._backend_thread.wait(800):
                     self._backend_thread.terminate()
                     self._backend_thread.wait(300)
-            if self.backend is not None:
+            if (not backend_shutdown_done) and self.backend is not None:
                 try:
                     self.backend.shutdown()
                 except Exception:

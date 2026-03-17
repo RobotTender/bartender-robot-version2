@@ -4,12 +4,14 @@ import os
 import shlex
 import subprocess
 import sys
+import ctypes
 from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parent
 SYSTEM_LAUNCH_PATH = REPO_ROOT / "launch" / "system_launch.py"
 BOOTSTRAP_ENV_KEY = "BARTENDER_ENV_BOOTSTRAPPED"
+DEFAULT_VISION_PYTHON = Path("/home/up/venv-vision/bin/python")
 
 
 def _find_ros_setup():
@@ -37,12 +39,20 @@ def _find_workspace_setup():
 
 
 def _needs_ros_bootstrap():
-    return (
+    if (
         importlib.util.find_spec("ament_index_python") is None
         or importlib.util.find_spec("launch") is None
-    )
+    ):
+        return True
+    # Some shells keep python packages importable while LD_LIBRARY_PATH misses ROS libs.
+    # In that case rclpy import fails at runtime with librcl_action.so not found.
+    try:
+        ctypes.CDLL("librcl_action.so")
+    except OSError:
+        return True
+    return False
 
-
+"""  """
 def _reexec_with_ros_env():
     if os.environ.get(BOOTSTRAP_ENV_KEY) == "1":
         return None
@@ -73,7 +83,16 @@ def _load_launch_main():
     return module.main
 
 
+def _ensure_default_vision_python():
+    # Keep app/backend interpreter as-is, but pin vision helpers to dedicated venv by default.
+    if str(os.environ.get("BARTENDER_VISION_PYTHON", "")).strip():
+        return
+    if DEFAULT_VISION_PYTHON.is_file():
+        os.environ["BARTENDER_VISION_PYTHON"] = str(DEFAULT_VISION_PYTHON)
+
+
 if __name__ == "__main__":
+    _ensure_default_vision_python()
     bootstrap_exit = _reexec_with_ros_env()
     if bootstrap_exit is not None:
         raise SystemExit(bootstrap_exit)

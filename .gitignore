@@ -29,6 +29,7 @@ staticfiles/
 .env
 .env.*
 *.env
+!.env.example
 
 # ==============================
 # VSCode
@@ -61,3 +62,6 @@ robot/log/
 robot/src/**/build/
 robot/src/**/install/
 robot/src/**/log/
+
+# profiling and local scratch
+perf.data

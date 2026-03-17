@@ -1,32 +1,46 @@
-# Voice Order Test Panel
+# Voice Order Panel / WEB UI
 
-이 문서는 `bartender-robot` UI에 추가된 좌측 `음성주문 LLM 테스트` 섹션 설명입니다.
+이 문서는 `bartender-robot` 저장소 내부 소스만 사용해 구성된 음성주문 기능을 설명합니다.
 
 ## 목적
 
-- `robot-llm-combine` 주문 파이프라인의 핵심 흐름(입력 -> 분류 -> 레시피)을 GUI 안에서 점검
-- 로봇 동작 호출 없이, 텍스트 기반 테스트만 수행
-- 별도 프로세스로 실행하여 메인 UI와 분리
+- `bartender-robot/src/order_integration` 내부 로직으로 음성주문 분류/레시피 도출 수행
+- 외부 저장소 참조 없이 단일 저장소에서 운영
+- 최종 사용자용 WEB UI 제공
 
-## 추가된 파일
+## 주요 파일
 
 - `/home/up/ros2_ws/src/bartender-robot/src/order_integration/voice_order_pipeline.py`
-  - 메뉴 분류/레시피 도출 로직
-- `/home/up/ros2_ws/src/bartender-robot/src/order_integration/voice_order_test_worker.py`
-  - 별도 프로세스 워커 (stdin JSON 입력, stdout JSON 로그 출력)
+  - 메뉴 분류/레시피 도출 + stage 이벤트/결과 payload 생성 로직
+- `/home/up/ros2_ws/src/bartender-robot/src/order_integration/voice_order_worker.py`
+  - 백엔드 요청을 받아 STT/분류를 실행하는 음성 워커
+- `/home/up/ros2_ws/src/bartender-robot/src/order_integration/voice_order_route.py`
+  - 백엔드에서 음성 워커 subprocess를 호출하는 래퍼
+- `/home/up/ros2_ws/src/bartender-robot/src/frontend/user_frontend.py`
+  - 최종 사용자용 WEB UI 서버
 - `/home/up/ros2_ws/src/bartender-robot/src/frontend/developer_frontend.py`
-  - 좌측 테스트 패널 UI 및 워커 연동
+  - 음성주문 패널(상태/업데이트/WEB UI 링크) 표시
 
-## 동작 방식
+## WEB UI 실행
 
-1. UI에서 `테스트 시작` 클릭
-2. 프론트엔드가 `voice_order_test_worker.py`를 subprocess로 실행
-3. 워커가 단계 로그를 JSON 라인으로 출력
-4. UI가 로그를 실시간 표시하고 최종 메뉴/레시피를 결과창에 반영
+기본 실행(`run_bartender.py`) 시 `launch/system_launch.py`에서 WEB UI가 함께 기동됩니다.
 
-## 현재 제한
+- 기본 주소: `http://127.0.0.1:8000`
+- 브라우저에서 마이크 버튼으로 STT 수집 후 주문 처리 가능
 
-- 마이크 실시간 수집(STT)은 비활성화
-- HTML 주문 UI는 화면에서 비활성화로 표시만 함
-- 로봇 명령 실행은 강제 비활성화
+필수 환경변수(`.env`):
 
+- `GOOGLE_API_KEY` 또는 `GEMINI_API_KEY` (Gemini STT)
+- `OPENAI_API_KEY` (메뉴 분류 LLM)
+
+필수 파이썬 패키지:
+
+- `google-genai`
+- `openai`
+- `SpeechRecognition`
+- `python-dotenv`
+
+## 제한
+
+- 로봇 명령 실행은 음성주문 경로에서 비활성화
+- 브라우저 마이크 지원은 Web Speech API 지원 브라우저에 의존

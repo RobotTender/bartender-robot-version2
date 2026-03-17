@@ -17,9 +17,9 @@ if CURRENT_DIR not in sys.path:
 from vision_meta_common import BaseVisionMetaProcess, build_parser, model_path, run_process, simplify_contour
 
 
-DEFAULT_IMAGE_TOPIC = os.environ.get("VISION2_IMAGE_TOPIC", "/camera2/camera/color/image_raw")
-DEFAULT_DEPTH_TOPIC = os.environ.get("VISION2_DEPTH_TOPIC", "/camera2/camera/aligned_depth_to_color/image_raw")
-DEFAULT_OUTPUT_TOPIC = os.environ.get("VISION_VOLUME_META_TOPIC_2", "/vision2/volume/meta")
+DEFAULT_IMAGE_TOPIC = os.environ.get("VISION2_IMAGE_TOPIC", "/camera/camera_2/color/image_raw")
+DEFAULT_DEPTH_TOPIC = os.environ.get("VISION2_DEPTH_TOPIC", "/camera/camera_2/aligned_depth_to_color/image_raw")
+DEFAULT_OUTPUT_TOPIC = os.environ.get("VISION_VOLUME_META_TOPIC_2", "/camera/camera_2/detection/volume/meta")
 DEFAULT_WEIGHTS = model_path("cam_2.pt")
 
 
@@ -46,14 +46,14 @@ class GlassFillLevelProcess(BaseVisionMetaProcess):
         self.weights_path = os.path.abspath(str(args.weights or "").strip() or DEFAULT_WEIGHTS)
         _enable_legacy_model_aliases()
         self.model = YOLO(self.weights_path)
-        self.conf = float(args.conf) if float(args.conf) > 0.0 else 0.25
+        self.conf = float(args.conf) if float(args.conf) > 0.0 else 0.5
         self.height_ema_alpha = 0.2
         self.height_px_ema = None
         self.fixed_bottle_bottom_y = None
-        self.bottle_class_name = "bottle"
-        self.known_heights_px = np.array([0, 71, 105, 140, 180, 206, 253, 290, 338, 400, 450], dtype=np.float32)
+        self.container_class_names = {"cup", "bottle"}
+        self.known_heights_px = np.array([0, 26.3, 50, 67.4, 84, 100, 115.7, 131.9, 140.1, 158, 174], dtype=np.float32)
         self.known_volumes_ml = np.array([0, 50, 100, 150, 200, 250, 300, 350, 400, 450, 500], dtype=np.float32)
-        super().__init__(args, f"vision{int(args.panel)}_volume_meta")
+        super().__init__(args, f"bartender_vision{int(args.panel)}_volume_meta")
         self.get_logger().info(f"mode={self.mode} weights={self.weights_path} conf={self.conf:.2f}")
 
     def _height_px_to_volume_ml(self, height_px: float):
@@ -114,6 +114,7 @@ class GlassFillLevelProcess(BaseVisionMetaProcess):
                 mask_bin = (mi > 0.5).astype(np.uint8)
                 mask_area = int(np.count_nonzero(mask_bin))
                 class_name = str(self.model.names.get(class_id, class_id))
+                class_name_key = class_name.strip().lower()
                 contour = simplify_contour(mask_bin)
                 depth_m = self._mask_depth_m_from_array(depth_infer, mask_bin)
                 bbox_src = self._map_bbox_rotated_to_source((x1, y1, x2, y2), src_w, src_h)
@@ -132,7 +133,7 @@ class GlassFillLevelProcess(BaseVisionMetaProcess):
                     "contour_uv": contour_src,
                 }
                 detections.append(det)
-                if class_name == self.bottle_class_name:
+                if class_name_key in self.container_class_names:
                     if bottle is None or int(mask_area) > int(bottle.get("mask_area", 0)):
                         bottle = det
                         bottle_mask_current = mask_bin.copy()
@@ -149,7 +150,7 @@ class GlassFillLevelProcess(BaseVisionMetaProcess):
         height_px_ema = None
         bottom_y = self.fixed_bottle_bottom_y
 
-        if bottle_mask_current is not None and liquid_mask_current is not None and self.fixed_bottle_bottom_y is None:
+        if bottle_mask_current is not None and liquid_mask_current is None and self.fixed_bottle_bottom_y is None:
             ys_b = np.where(bottle_mask_current > 0)[0]
             if len(ys_b) > 0:
                 self.fixed_bottle_bottom_y = int(np.max(ys_b))

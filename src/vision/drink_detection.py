@@ -15,9 +15,9 @@ if CURRENT_DIR not in sys.path:
 from vision_meta_common import BaseVisionMetaProcess, build_parser, model_path, run_process
 
 
-DEFAULT_IMAGE_TOPIC = os.environ.get("VISION1_IMAGE_TOPIC", "/camera/camera/color/image_raw")
-DEFAULT_DEPTH_TOPIC = os.environ.get("VISION1_DEPTH_TOPIC", "/camera/camera/aligned_depth_to_color/image_raw")
-DEFAULT_OUTPUT_TOPIC = os.environ.get("VISION_OBJECT_META_TOPIC_1", "/vision1/object/meta")
+DEFAULT_IMAGE_TOPIC = os.environ.get("VISION1_IMAGE_TOPIC", "/camera/camera_1/color/image_raw")
+DEFAULT_DEPTH_TOPIC = os.environ.get("VISION1_DEPTH_TOPIC", "/camera/camera_1/aligned_depth_to_color/image_raw")
+DEFAULT_OUTPUT_TOPIC = os.environ.get("VISION_OBJECT_META_TOPIC_1", "/camera/camera_1/detection/object/meta")
 DEFAULT_WEIGHTS = model_path("cam_1.pt")
 
 
@@ -27,7 +27,7 @@ class DrinkDetectionProcess(BaseVisionMetaProcess):
         self.weights_path = os.path.abspath(str(args.weights or "").strip() or DEFAULT_WEIGHTS)
         self.model = YOLO(self.weights_path)
         self.conf = float(args.conf) if float(args.conf) > 0.0 else 0.5
-        super().__init__(args, f"vision{int(args.panel)}_object_meta")
+        super().__init__(args, f"bartender_vision{int(args.panel)}_object_meta")
         self.get_logger().info(f"mode={self.mode} weights={self.weights_path} conf={self.conf:.2f}")
 
     def build_payload(self, frame):

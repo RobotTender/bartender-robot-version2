@@ -18,18 +18,14 @@ from ultralytics import YOLO
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 DEFAULT_WEIGHTS = os.path.join(PROJECT_ROOT, "assets", "models", "cam_2.pt")
 IMAGE_TOPICS = (
-    "/camera2/camera/color/image_raw",
     "/camera/camera_2/color/image_raw",
 )
 DEPTH_TOPICS = (
-    "/camera2/camera/aligned_depth_to_color/image_raw",
     "/camera/camera_2/aligned_depth_to_color/image_raw",
-    "/camera/camera_2/depth/image_rect_raw",
 )
 CLASS_COLORS = {
     0: (0, 0, 255),
     1: (255, 0, 0),
-    2: (0, 255, 0),
 }
 
 
@@ -52,14 +48,14 @@ def _enable_legacy_model_aliases():
 
 class GlassFillLevelPreview(Node):
     def __init__(self):
-        super().__init__("glass_fill_level_preview")
+        super().__init__("experimental_bartender_vision2_preview_volume")
         self.depth_image = None
         self.color_image = None
         self.depth_scale = 0.001
         _enable_legacy_model_aliases()
         self.model = YOLO(DEFAULT_WEIGHTS)
-        self.bottle_class_name = "bottle"
-        self.known_heights_px = np.array([0, 71, 105, 140, 180, 206, 253, 290, 338, 400, 450], dtype=np.float32)
+        self.container_class_names = {"cup", "bottle"}
+        self.known_heights_px = np.array([0, 26.3, 50, 67.4, 84, 100, 115.7, 131.9, 140.1, 158, 174], dtype=np.float32)
         self.known_volumes_ml = np.array([0, 50, 100, 150, 200, 250, 300, 350, 400, 450, 500], dtype=np.float32)
         self.height_ema_alpha = 0.2
         self.height_px_ema = None
@@ -137,9 +133,9 @@ class GlassFillLevelPreview(Node):
             return
         self.depth_image = depth
 
-        depth_m = cv2.flip(self.depth_image.astype(np.float32) * self.depth_scale, -1)
-        img_vis = cv2.flip(self.color_image.copy(), -1)
-        results = self.model.predict(source=img_vis, conf=0.25, iou=0.5, retina_masks=True, verbose=False)
+        depth_m = self.depth_image.astype(np.float32) * self.depth_scale
+        img_vis = self.color_image.copy()
+        results = self.model.predict(source=img_vis, conf=0.5, iou=0.5, retina_masks=True, verbose=False)
         overlay = img_vis.copy()
 
         bottle_mask_current = None
@@ -169,9 +165,10 @@ class GlassFillLevelPreview(Node):
                 mask_bin = (mi > 0.5).astype(np.uint8)
                 mask_area = int(np.count_nonzero(mask_bin))
                 class_name = self.model.names.get(cls_id, cls_id)
+                class_name_key = str(class_name).strip().lower()
                 color = CLASS_COLORS.get(cls_id, (255, 255, 255))
 
-                if class_name == self.bottle_class_name:
+                if class_name_key in self.container_class_names:
                     if bottle_mask_current is None or mask_area > int(np.count_nonzero(bottle_mask_current)):
                         bottle_mask_current = mask_bin.copy()
                 else:
@@ -201,7 +198,7 @@ class GlassFillLevelPreview(Node):
                     cv2.LINE_AA,
                 )
 
-        if bottle_mask_current is not None and liquid_mask_current is not None and self.fixed_bottle_bottom_y is None:
+        if bottle_mask_current is not None and liquid_mask_current is None and self.fixed_bottle_bottom_y is None:
             ys_b = np.where(bottle_mask_current > 0)[0]
             if len(ys_b) > 0:
                 self.fixed_bottle_bottom_y = int(np.max(ys_b))

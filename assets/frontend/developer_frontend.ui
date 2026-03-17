@@ -6,8 +6,8 @@
    <rect>
     <x>0</x>
     <y>0</y>
-    <width>1594</width>
-    <height>916</height>
+    <width>1946</width>
+    <height>1234</height>
    </rect>
   </property>
   <property name="palette">
@@ -164,14 +164,14 @@ selection-color: #ffffff;</string>
   </property>
   <widget class="QWidget" name="centralwidget">
    <widget class="QFrame" name="frame">
-    <property name="geometry">
-     <rect>
-      <x>10</x>
-      <y>9</y>
-      <width>511</width>
-      <height>581</height>
-     </rect>
-    </property>
+   <property name="geometry">
+    <rect>
+      <x>12</x>
+      <y>622</y>
+      <width>531</width>
+      <height>600</height>
+    </rect>
+   </property>
     <property name="styleSheet">
      <string notr="true">QFrame#frame { background: #ffffff; border: 1px solid #000000; border-radius: 6px; }</string>
     </property>
@@ -186,7 +186,7 @@ selection-color: #ffffff;</string>
       <rect>
        <x>10</x>
        <y>93</y>
-       <width>491</width>
+       <width>511</width>
        <height>341</height>
       </rect>
      </property>
@@ -211,7 +211,7 @@ selection-color: #ffffff;</string>
       <rect>
        <x>10</x>
        <y>50</y>
-       <width>491</width>
+       <width>511</width>
        <height>20</height>
       </rect>
      </property>
@@ -375,7 +375,7 @@ selection-color: #ffffff;</string>
       <rect>
        <x>10</x>
        <y>442</y>
-       <width>491</width>
+       <width>511</width>
        <height>129</height>
       </rect>
      </property>
@@ -470,15 +470,270 @@ selection-color: #ffffff;</string>
      </widget>
     </widget>
    </widget>
-   <widget class="QFrame" name="frame_2">
-    <property name="geometry">
-     <rect>
-      <x>1050</x>
-      <y>10</y>
+   <widget class="QFrame" name="voice_order_panel">
+   <property name="geometry">
+    <rect>
+      <x>12</x>
+      <y>12</y>
       <width>531</width>
-      <height>581</height>
-     </rect>
+      <height>600</height>
+    </rect>
+   </property>
+    <property name="styleSheet">
+     <string notr="true">QFrame#voice_order_panel { background: #ffffff; border: 1px solid #000000; border-radius: 6px; }</string>
     </property>
+    <property name="frameShape">
+     <enum>QFrame::Box</enum>
+    </property>
+    <property name="frameShadow">
+     <enum>QFrame::Raised</enum>
+    </property>
+    <widget class="QCheckBox" name="voice_order_connection_toggle">
+     <property name="geometry">
+      <rect>
+       <x>10</x>
+       <y>10</y>
+       <width>71</width>
+       <height>20</height>
+      </rect>
+     </property>
+     <property name="styleSheet">
+      <string notr="true">QCheckBox { font-size: 8pt; font-weight: 700; color: #425466; }QCheckBox::indicator { width: 30px; height: 16px; border-radius: 8px; border: 1px solid #90a4ae; background: #cfd8dc; }QCheckBox::indicator:checked { background: #66bb6a; border: 1px solid #388e3c; }QCheckBox::indicator:unchecked { background: #cfd8dc; border: 1px solid #90a4ae; }</string>
+     </property>
+     <property name="text">
+      <string>OFF</string>
+     </property>
+    </widget>
+    <widget class="QLabel" name="voice_order_cycle_label">
+     <property name="geometry">
+      <rect>
+       <x>353</x>
+       <y>10</y>
+       <width>168</width>
+       <height>16</height>
+      </rect>
+     </property>
+     <property name="styleSheet">
+      <string notr="true">font-size: 9pt; color: #555555;</string>
+     </property>
+     <property name="text">
+      <string>업데이트: - ms</string>
+     </property>
+     <property name="alignment">
+      <set>Qt::AlignRight|Qt::AlignTrailing|Qt::AlignVCenter</set>
+     </property>
+    </widget>
+    <widget class="QLabel" name="voice_order_connection_dot">
+     <property name="geometry">
+      <rect>
+       <x>0</x>
+       <y>36</y>
+       <width>41</width>
+       <height>41</height>
+      </rect>
+     </property>
+     <property name="styleSheet">
+      <string notr="true">font-size: 20pt; color: #EF6C00;</string>
+     </property>
+     <property name="text">
+      <string>●</string>
+     </property>
+     <property name="alignment">
+      <set>Qt::AlignCenter</set>
+     </property>
+    </widget>
+    <widget class="QLabel" name="voice_order_connection_label">
+     <property name="geometry">
+      <rect>
+       <x>50</x>
+       <y>26</y>
+       <width>351</width>
+       <height>61</height>
+      </rect>
+     </property>
+     <property name="styleSheet">
+      <string notr="true">font-size: 14pt; font-weight: 700; color: #202020;</string>
+     </property>
+     <property name="text">
+      <string>음성주문: 비활성화</string>
+     </property>
+     <property name="alignment">
+      <set>Qt::AlignLeading|Qt::AlignLeft|Qt::AlignVCenter</set>
+     </property>
+    </widget>
+    <widget class="QLabel" name="voice_order_input_label">
+     <property name="geometry">
+      <rect>
+       <x>10</x>
+       <y>90</y>
+       <width>511</width>
+       <height>20</height>
+      </rect>
+     </property>
+     <property name="styleSheet">
+      <string notr="true">font-size: 10pt; font-weight: 600; color: #1f2937;</string>
+     </property>
+     <property name="text">
+      <string>마이크 입력(STT 결과)</string>
+     </property>
+    </widget>
+    <widget class="QPlainTextEdit" name="voice_order_input_edit">
+     <property name="geometry">
+      <rect>
+       <x>10</x>
+       <y>112</y>
+       <width>511</width>
+       <height>78</height>
+      </rect>
+     </property>
+     <property name="styleSheet">
+      <string notr="true">QPlainTextEdit { background: #f8fafc; color: #0f172a; border: 1px solid #cbd5e1; border-radius: 4px; padding: 6px; }</string>
+     </property>
+     <property name="placeholderText">
+      <string>노트북 마이크 입력 대기중...</string>
+     </property>
+    </widget>
+    <widget class="QLabel" name="voice_order_llm_label">
+     <property name="geometry">
+      <rect>
+       <x>10</x>
+       <y>198</y>
+       <width>511</width>
+       <height>20</height>
+      </rect>
+     </property>
+     <property name="styleSheet">
+      <string notr="true">font-size: 10pt; font-weight: 600; color: #1f2937;</string>
+     </property>
+     <property name="text">
+      <string>LLM 응답(TTS)</string>
+     </property>
+    </widget>
+    <widget class="QPlainTextEdit" name="voice_order_llm_edit">
+     <property name="geometry">
+      <rect>
+       <x>10</x>
+       <y>220</y>
+       <width>511</width>
+       <height>60</height>
+      </rect>
+     </property>
+     <property name="styleSheet">
+      <string notr="true">QPlainTextEdit { background: #f8fafc; color: #0f172a; border: 1px solid #cbd5e1; border-radius: 4px; padding: 6px; }</string>
+     </property>
+     <property name="placeholderText">
+      <string>음성주문 응답 대기중...</string>
+     </property>
+    </widget>
+    <widget class="QPushButton" name="voice_order_mic_button">
+     <property name="geometry">
+      <rect>
+       <x>10</x>
+       <y>288</y>
+       <width>511</width>
+       <height>28</height>
+      </rect>
+     </property>
+     <property name="styleSheet">
+      <string notr="true">QPushButton { background: #1f6feb; color: #ffffff; border: 1px solid #1f6feb; border-radius: 4px; font-weight: 700; }QPushButton:hover { background: #1660ce; }QPushButton:disabled { background: #94a3b8; border-color: #94a3b8; color: #f8fafc; }</string>
+     </property>
+     <property name="text">
+      <string>마이크 입력 시작</string>
+     </property>
+    </widget>
+    <widget class="QLabel" name="voice_order_mic_state_label">
+     <property name="geometry">
+      <rect>
+       <x>10</x>
+       <y>322</y>
+       <width>511</width>
+       <height>18</height>
+      </rect>
+     </property>
+     <property name="styleSheet">
+      <string notr="true">font-size: 9.2pt; font-weight: 700; color: #1f2937;</string>
+     </property>
+     <property name="text">
+      <string>마이크 상태: 대기</string>
+     </property>
+     <property name="alignment">
+      <set>Qt::AlignLeading|Qt::AlignLeft|Qt::AlignVCenter</set>
+     </property>
+    </widget>
+    <widget class="QLabel" name="voice_order_log_label">
+     <property name="geometry">
+      <rect>
+       <x>10</x>
+       <y>324</y>
+       <width>511</width>
+       <height>20</height>
+      </rect>
+     </property>
+     <property name="visible">
+      <bool>false</bool>
+     </property>
+     <property name="styleSheet">
+      <string notr="true">font-size: 10pt; font-weight: 600; color: #1f2937;</string>
+     </property>
+     <property name="text">
+      <string>처리 로그</string>
+     </property>
+    </widget>
+    <widget class="QPlainTextEdit" name="voice_order_log_view">
+     <property name="geometry">
+      <rect>
+       <x>10</x>
+       <y>346</y>
+       <width>511</width>
+       <height>180</height>
+      </rect>
+     </property>
+     <property name="visible">
+      <bool>false</bool>
+     </property>
+     <property name="styleSheet">
+      <string notr="true">QPlainTextEdit { background: #0f172a; color: #dbeafe; border: 1px solid #334155; border-radius: 4px; }</string>
+     </property>
+    </widget>
+    <widget class="QLabel" name="voice_order_result_label">
+     <property name="geometry">
+      <rect>
+       <x>10</x>
+       <y>324</y>
+       <width>511</width>
+       <height>20</height>
+      </rect>
+     </property>
+     <property name="styleSheet">
+      <string notr="true">font-size: 10pt; font-weight: 600; color: #1f2937;</string>
+     </property>
+     <property name="text">
+      <string>도출 결과</string>
+     </property>
+    </widget>
+    <widget class="QPlainTextEdit" name="voice_order_recipe_view">
+     <property name="geometry">
+      <rect>
+       <x>10</x>
+       <y>346</y>
+       <width>511</width>
+       <height>178</height>
+      </rect>
+     </property>
+     <property name="styleSheet">
+      <string notr="true">QPlainTextEdit { background: #f8fafc; color: #0f172a; border: 1px solid #cbd5e1; border-radius: 4px; }</string>
+     </property>
+    </widget>
+   </widget>
+   <widget class="QFrame" name="frame_2">
+   <property name="geometry">
+    <rect>
+      <x>553</x>
+      <y>12</y>
+      <width>531</width>
+      <height>600</height>
+    </rect>
+   </property>
     <property name="styleSheet">
      <string notr="true">QFrame#frame_2 { background: #ffffff; border: 1px solid #000000; border-radius: 6px; }</string>
     </property>
@@ -1039,7 +1294,7 @@ selection-color: #ffffff;</string>
        <rect>
         <x>10</x>
         <y>30</y>
-        <width>121</width>
+        <width>113</width>
         <height>41</height>
        </rect>
       </property>
@@ -1050,9 +1305,9 @@ selection-color: #ffffff;</string>
      <widget class="QPushButton" name="pushButton">
       <property name="geometry">
        <rect>
-        <x>140</x>
+        <x>136</x>
         <y>80</y>
-        <width>121</width>
+        <width>113</width>
         <height>41</height>
        </rect>
       </property>
@@ -1063,10 +1318,10 @@ selection-color: #ffffff;</string>
      <widget class="QPushButton" name="reset_button">
       <property name="geometry">
        <rect>
-        <x>390</x>
+        <x>388</x>
         <y>30</y>
-        <width>111</width>
-        <height>91</height>
+        <width>113</width>
+        <height>41</height>
        </rect>
       </property>
       <property name="styleSheet">
@@ -1097,9 +1352,9 @@ QPushButton:disabled {
      <widget class="QPushButton" name="print_pos_button">
       <property name="geometry">
        <rect>
-        <x>140</x>
+        <x>136</x>
         <y>30</y>
-        <width>121</width>
+        <width>113</width>
         <height>41</height>
        </rect>
       </property>
@@ -1110,9 +1365,9 @@ QPushButton:disabled {
      <widget class="QPushButton" name="print_pos_button_2">
       <property name="geometry">
        <rect>
-        <x>270</x>
+        <x>262</x>
         <y>30</y>
-        <width>111</width>
+        <width>113</width>
         <height>41</height>
        </rect>
       </property>
@@ -1125,7 +1380,7 @@ QPushButton:disabled {
        <rect>
         <x>10</x>
         <y>80</y>
-        <width>121</width>
+        <width>113</width>
         <height>41</height>
        </rect>
       </property>
@@ -1136,14 +1391,51 @@ QPushButton:disabled {
      <widget class="QPushButton" name="tool_change_button">
       <property name="geometry">
        <rect>
-        <x>270</x>
+        <x>262</x>
         <y>80</y>
-        <width>111</width>
+        <width>113</width>
         <height>41</height>
        </rect>
       </property>
       <property name="text">
        <string>툴 변경</string>
+     </property>
+     </widget>
+     <widget class="QPushButton" name="emergency_stop_button">
+      <property name="geometry">
+       <rect>
+        <x>388</x>
+        <y>80</y>
+        <width>113</width>
+        <height>41</height>
+       </rect>
+      </property>
+      <property name="styleSheet">
+       <string notr="true">QPushButton {
+    background-color: #d32f2f;
+    color: #ffeb3b;
+    border: 1px solid #9a0007;
+    border-radius: 4px;
+    padding: 4px 10px;
+    font-weight: 700;
+}
+QPushButton:hover {
+    background-color: #e53935;
+    color: #fff176;
+}
+QPushButton:pressed {
+    background-color: #b71c1c;
+    border: 1px solid #7f0000;
+    color: #fdd835;
+}
+QPushButton:disabled {
+    background-color: #eceff1;
+    color: #9e9e9e;
+    border: 1px solid #cfd8dc;
+}</string>
+      </property>
+      <property name="text">
+       <string>정지</string>
       </property>
      </widget>
     </widget>
@@ -1541,14 +1833,14 @@ QPushButton:disabled {
     </widget>
    </widget>
    <widget class="QFrame" name="frame_3">
-    <property name="geometry">
-     <rect>
-      <x>10</x>
-      <y>600</y>
-      <width>1571</width>
-      <height>291</height>
-     </rect>
-    </property>
+   <property name="geometry">
+    <rect>
+      <x>1094</x>
+      <y>12</y>
+      <width>840</width>
+      <height>1210</height>
+    </rect>
+   </property>
     <property name="styleSheet">
      <string notr="true">QFrame#frame_3 { background: #ffffff; border: 1px solid #000000
 ; border-radius: 6px; }</string>
@@ -1560,14 +1852,14 @@ QPushButton:disabled {
      <enum>QFrame::Raised</enum>
     </property>
     <widget class="QPlainTextEdit" name="terminal">
-     <property name="geometry">
-      <rect>
+    <property name="geometry">
+     <rect>
        <x>10</x>
        <y>40</y>
-       <width>1551</width>
-       <height>241</height>
-      </rect>
-     </property>
+       <width>820</width>
+       <height>1160</height>
+     </rect>
+    </property>
     </widget>
     <widget class="QLabel" name="label_2">
      <property name="geometry">
@@ -1590,28 +1882,28 @@ QPushButton:disabled {
      </property>
     </widget>
     <widget class="QPushButton" name="log_clear_button">
-     <property name="geometry">
-      <rect>
-       <x>1460</x>
-       <y>10</y>
+    <property name="geometry">
+     <rect>
+       <x>732</x>
+       <y>8</y>
        <width>96</width>
-       <height>31</height>
-      </rect>
-     </property>
+       <height>24</height>
+     </rect>
+    </property>
      <property name="text">
       <string>로그 클리어</string>
      </property>
     </widget>
    </widget>
    <widget class="QFrame" name="frame_4">
-    <property name="geometry">
-     <rect>
-      <x>530</x>
-      <y>10</y>
-      <width>511</width>
-      <height>581</height>
-     </rect>
-    </property>
+   <property name="geometry">
+    <rect>
+      <x>553</x>
+      <y>622</y>
+      <width>531</width>
+      <height>600</height>
+    </rect>
+   </property>
     <property name="styleSheet">
      <string notr="true">QFrame#frame_4 { background: #ffffff; border: 1px solid #000000; border-radius: 6px; }</string>
     </property>
@@ -1626,7 +1918,7 @@ QPushButton:disabled {
       <rect>
        <x>10</x>
        <y>93</y>
-       <width>491</width>
+       <width>511</width>
        <height>341</height>
       </rect>
      </property>
@@ -1651,7 +1943,7 @@ QPushButton:disabled {
       <rect>
        <x>10</x>
        <y>50</y>
-       <width>491</width>
+       <width>511</width>
        <height>20</height>
       </rect>
      </property>
@@ -1815,7 +2107,7 @@ QPushButton:disabled {
       <rect>
        <x>10</x>
        <y>442</y>
-       <width>491</width>
+       <width>511</width>
        <height>129</height>
       </rect>
      </property>

@@ -18,19 +18,16 @@ from ultralytics import YOLO
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 DEFAULT_WEIGHTS = os.path.join(PROJECT_ROOT, "assets", "models", "cam_1.pt")
 IMAGE_TOPICS = (
-    "/camera/camera/color/image_raw",
     "/camera/camera_1/color/image_raw",
 )
 DEPTH_TOPICS = (
-    "/camera/camera/aligned_depth_to_color/image_raw",
     "/camera/camera_1/aligned_depth_to_color/image_raw",
-    "/camera/camera_1/depth/image_rect_raw",
 )
 
 
 class DrinkDetectionPreview(Node):
     def __init__(self):
-        super().__init__("drink_detection_preview")
+        super().__init__("experimental_bartender_vision1_preview_object")
         self.depth_image = None
         self.color_image = None
         self.depth_scale = 0.001

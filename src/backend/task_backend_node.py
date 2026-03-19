@@ -257,6 +257,10 @@ try:
     BARTENDER_SEQUENCE_API_PORT = int(os.environ.get("BARTENDER_SEQUENCE_API_PORT", "8765"))
 except Exception:
     BARTENDER_SEQUENCE_API_PORT = 8765
+ROBOT_ACTION_INGREDIENT_CLASS_ALIASES = {
+    "soju": ("soju", "소주"),
+    "beer": ("beer", "맥주", "비어"),
+}
 
 DR_init.__dsr__id = ROBOT_ID
 DR_init.__dsr__model = ROBOT_MODEL
@@ -295,6 +299,10 @@ DSR_BRIDGE_NODE_NAME = (
 MODE_MONITOR_NODE_NAME = (
     str(os.environ.get("BARTENDER_MODE_MONITOR_NODE_NAME", "bartender_mode_monitor") or "").strip()
     or "bartender_mode_monitor"
+)
+VISION_BRIDGE_NODE_NAME = (
+    str(os.environ.get("BARTENDER_VISION_BRIDGE_NODE_NAME", "bartender_vision_bridge") or "").strip()
+    or "bartender_vision_bridge"
 )
 
 
@@ -704,6 +712,10 @@ class NativeRobotActionApi:
             raise RuntimeError(f"{label} 실패: XYZABC 길이가 올바르지 않습니다.")
         self._check_motion(label, max_state_age_sec=2.0)
         velx, accx = self._cart_profile(vel=vel, acc=acc)
+        self._append_log(
+            f"{label}(XYZABC={target[0]:.3f},{target[1]:.3f},{target[2]:.3f},{target[3]:.3f},{target[4]:.3f},{target[5]:.3f}, "
+            f"vel={velx[0]:.1f}, acc={accx[0]:.1f})"
+        )
         ret = movel(posx(target), vel=velx, acc=accx, radius=0.0, ra=DR_MV_RA_DUPLICATE)
         if self.robot_controller is not None and (not self.robot_controller._motion_ok(ret, f"movel({label})")):
             raise RuntimeError(f"{label} 실패: movel 반환값={ret}")
@@ -1350,6 +1362,7 @@ class RobotBackend:
         self._last_error = None
 
         self._spin_thread = None
+        self._vision_spin_thread = None
         self._worker_thread = None
         self._gripper_ready_event = threading.Event()
         self._gripper_init_started = False
@@ -1357,8 +1370,10 @@ class RobotBackend:
         self._gripper_init_lock = threading.Lock()
 
         self._executor = None
+        self._vision_executor = None
         self._dsr_node = None
         self._mode_node = None
+        self._vision_bridge_node = None
         self.robot_controller = None
         self._position_lock = threading.Lock()
         self._last_positions = None
@@ -1566,6 +1581,8 @@ class RobotBackend:
         self._dsr_node = rclpy.create_node(DSR_BRIDGE_NODE_NAME, namespace=ROBOT_ID)
         # 모드 set/get 서비스 전용 노드(무브 API와 분리)
         self._mode_node = rclpy.create_node(MODE_MONITOR_NODE_NAME, namespace=ROBOT_ID)
+        # 비전 UI 구독 전용 노드(로봇 제어 노드와 callback 부하 분리)
+        self._vision_bridge_node = rclpy.create_node(VISION_BRIDGE_NODE_NAME, namespace=ROBOT_ID)
         # Avoid class-scope name-mangling on double-underscore attributes.
         setattr(DR_init, "__dsr__node", self._dsr_node)
 
@@ -1586,9 +1603,14 @@ class RobotBackend:
         self._executor.add_node(self.robot_controller)
         self._executor.add_node(self._dsr_node)
         self._executor.add_node(self._mode_node)
+        self._vision_executor = MultiThreadedExecutor(num_threads=1)
+        if self._vision_bridge_node is not None:
+            self._vision_executor.add_node(self._vision_bridge_node)
     
         self._spin_thread = threading.Thread(target=self._spin_bg, daemon=True)
         self._spin_thread.start()
+        self._vision_spin_thread = threading.Thread(target=self._spin_vision_bg, daemon=True)
+        self._vision_spin_thread.start()
 
         self._detect_connection_mode_once(progress_callback=progress_callback)
         self._setup_position_source(progress_callback, wait_timeout_sec=0.15)
@@ -1629,6 +1651,34 @@ class RobotBackend:
                     print(f"executor.spin_once 예외: {e}")
                     last_warn_at = now
                 time.sleep(0.05)
+
+    def _spin_vision_bg(self):
+        last_warn_at = 0.0
+        while not self._stop_event.is_set():
+            try:
+                if self._vision_executor is None:
+                    time.sleep(0.05)
+                    continue
+                if not rclpy.ok():
+                    break
+                self._vision_executor.spin_once(timeout_sec=0.05)
+            except Exception as e:
+                msg = str(e)
+                if ("Destroyable" in msg) or ("destruction was requested" in msg):
+                    if self._stop_event.is_set():
+                        break
+                    time.sleep(0.01)
+                    continue
+                now = time.monotonic()
+                if (now - last_warn_at) > 1.0:
+                    print(f"vision executor.spin_once 예외: {e}")
+                    last_warn_at = now
+                time.sleep(0.03)
+
+    def get_vision_subscription_node(self):
+        if self._vision_bridge_node is not None:
+            return self._vision_bridge_node
+        return self.robot_controller
 
     def _initialize_gripper_sequence(self, progress_callback=None):
         if not self.use_real_gripper:
@@ -2358,6 +2408,10 @@ class RobotBackend:
     def _try_upgrade_robot_mode_source(self):
         if RobotStateRt is None or self.robot_controller is None:
             return
+        if self._stop_event.is_set():
+            return
+        if not rclpy.ok():
+            return
         if not self._robot_stream_enabled:
             return
         if self._robot_mode_sub is not None:
@@ -2369,15 +2423,28 @@ class RobotBackend:
         with self._source_lock:
             if self._robot_mode_sub is not None:
                 return
-            topic_map = dict(self.robot_controller.get_topic_names_and_types())
-            rt_topics = [t for t, types in topic_map.items() if "dsr_msgs2/msg/RobotStateRt" in types]
+            try:
+                topic_map = dict(self.robot_controller.get_topic_names_and_types())
+            except Exception as exc:
+                self.robot_controller._log_info(f"로봇모드 토픽 자동 전환 보류: 토픽 조회 실패({exc})")
+                return
+            rt_topics = [
+                t
+                for t, types in topic_map.items()
+                if "dsr_msgs2/msg/RobotStateRt" in list(types if isinstance(types, (list, tuple)) else [])
+            ]
             if not rt_topics:
                 return
             preferred = [t for t in rt_topics if f"/{ROBOT_ID}/" in t]
             topic = sorted(preferred or rt_topics)[0]
-            self._robot_mode_sub = self.robot_controller.create_subscription(
-                RobotStateRt, topic, self._on_robot_mode_rt, 10
-            )
+            try:
+                self._robot_mode_sub = self.robot_controller.create_subscription(
+                    RobotStateRt, topic, self._on_robot_mode_rt, 10
+                )
+            except Exception as exc:
+                self._robot_mode_sub = None
+                self.robot_controller._log_info(f"로봇모드 토픽 자동 전환 보류: 구독 생성 실패({topic}, {exc})")
+                return
             self.robot_controller._log_info(f"로봇모드 토픽 자동 전환 완료: {topic}")
 
     def get_robot_state_snapshot(self):
@@ -3331,6 +3398,217 @@ class RobotBackend:
         except Exception as e:
             return None, f"vision1 affine 곱셈 실패: {e}"
         return (out_x, out_y, out_z), "ok"
+
+    def _normalize_robot_action_ingredient_code(self, raw_code: str):
+        code = str(raw_code or "").strip().lower()
+        if not code:
+            return ""
+        if code in ROBOT_ACTION_INGREDIENT_CLASS_ALIASES:
+            return code
+        for canonical, aliases in ROBOT_ACTION_INGREDIENT_CLASS_ALIASES.items():
+            for alias in tuple(aliases or ()):
+                alias_text = str(alias or "").strip().lower()
+                if not alias_text:
+                    continue
+                if code == alias_text or alias_text in code or code in alias_text:
+                    return str(canonical)
+        return code
+
+    def _match_robot_action_ingredient_class(self, class_name: str, ingredient_code: str):
+        name = str(class_name or "").strip().lower()
+        code = self._normalize_robot_action_ingredient_code(ingredient_code)
+        aliases = ROBOT_ACTION_INGREDIENT_CLASS_ALIASES.get(code, (code,))
+        if not name:
+            return False
+        for alias in tuple(aliases or ()):
+            alias_text = str(alias or "").strip().lower()
+            if not alias_text:
+                continue
+            if name == alias_text or alias_text in name or name in alias_text:
+                return True
+        return False
+
+    def _parse_robot_action_detection(self, det):
+        if not isinstance(det, dict):
+            return None
+
+        class_name = str(det.get("class_name", "") or "").strip().lower()
+        center_uv = det.get("center_uv")
+        if not isinstance(center_uv, (list, tuple)) or len(center_uv) < 2:
+            bbox = det.get("bbox_xyxy")
+            if isinstance(bbox, (list, tuple)) and len(bbox) >= 4:
+                try:
+                    x1, y1, x2, y2 = [float(v) for v in bbox[:4]]
+                    center_uv = [(x1 + x2) * 0.5, (y1 + y2) * 0.5]
+                except Exception:
+                    center_uv = None
+        if not isinstance(center_uv, (list, tuple)) or len(center_uv) < 2:
+            return None
+
+        try:
+            depth_m = float(det.get("depth_m"))
+        except Exception:
+            return None
+        if (not math.isfinite(depth_m)) or depth_m <= 0.0:
+            return None
+
+        try:
+            confidence = float(det.get("confidence"))
+            if not math.isfinite(confidence):
+                confidence = 0.0
+        except Exception:
+            confidence = 0.0
+
+        try:
+            u = float(center_uv[0])
+            v = float(center_uv[1])
+        except Exception:
+            return None
+        if (not math.isfinite(u)) or (not math.isfinite(v)):
+            return None
+
+        return {
+            "class_name": class_name,
+            "center_uv": [u, v],
+            "depth_m": float(depth_m),
+            "confidence": float(confidence),
+        }
+
+    def _pick_robot_action_detection_for_ingredient(self, detections, ingredient_code: str):
+        code = self._normalize_robot_action_ingredient_code(ingredient_code)
+        best = None
+        best_score = -1.0
+        for det in detections if isinstance(detections, list) else []:
+            parsed = self._parse_robot_action_detection(det)
+            if parsed is None:
+                continue
+            if not self._match_robot_action_ingredient_class(parsed.get("class_name", ""), code):
+                continue
+            score = float(parsed.get("confidence", 0.0))
+            if score >= best_score:
+                best = dict(parsed)
+                best_score = score
+        return best
+
+    def _wait_fresh_vision1_meta_snapshot(self, timeout_sec: float | None = None):
+        wait_sec = float(VISION1_META_WAIT_SEC if timeout_sec is None else timeout_sec)
+        wait_sec = max(0.2, wait_sec)
+        deadline = time.monotonic() + wait_sec
+        last_age_ms = None
+        while time.monotonic() <= deadline:
+            payload, seen_at = self.get_vision1_meta_snapshot()
+            if payload is not None and seen_at is not None:
+                age_sec = time.monotonic() - float(seen_at)
+                last_age_ms = max(0.0, age_sec * 1000.0)
+                if age_sec <= float(VISION1_META_STALE_SEC):
+                    return payload, seen_at, "ok"
+            time.sleep(0.05)
+        if last_age_ms is None:
+            return None, None, f"vision1 메타데이터가 없습니다. 토픽 확인: {VISION1_META_TOPIC}"
+        return None, None, f"vision1 메타데이터 지연: {last_age_ms:.0f}ms"
+
+    def _ensure_vision1_intrinsics_ready(self, timeout_sec: float = 1.0):
+        wait_sec = max(0.2, float(timeout_sec))
+        deadline = time.monotonic() + wait_sec
+        while time.monotonic() <= deadline:
+            if self._get_vision1_intrinsics() is not None:
+                return True, "ok"
+            time.sleep(0.05)
+        topic = self._vision1_camera_info_topic_in_use or VISION1_CAMERA_INFO_TOPIC_PRIMARY
+        return False, f"vision1 CameraInfo 미수신: {topic}"
+
+    def get_robot_action_vision_target_xyz(
+        self,
+        ingredient_code: str,
+        *,
+        menu_offsets=None,
+        apply_menu_offset: bool = True,
+    ):
+        if not self._ready_event.is_set():
+            return False, {}, "백엔드 준비 중입니다."
+
+        code = self._normalize_robot_action_ingredient_code(ingredient_code)
+        if code not in ROBOT_ACTION_INGREDIENT_CLASS_ALIASES:
+            supported = ", ".join(sorted(ROBOT_ACTION_INGREDIENT_CLASS_ALIASES.keys()))
+            return False, {}, f"지원하지 않는 재료 코드입니다: {ingredient_code} (지원: {supported})"
+
+        ok_src, msg_src = self._setup_bartender_action_sources(progress_callback=None)
+        if not ok_src:
+            return False, {}, str(msg_src or "비전 소스 준비 실패")
+
+        ok_aff, msg_aff = self._load_vision1_affine_from_file(force=False)
+        if not ok_aff:
+            return False, {}, str(msg_aff or "vision1 affine 로드 실패")
+
+        ok_intr, msg_intr = self._ensure_vision1_intrinsics_ready(timeout_sec=1.0)
+        if not ok_intr:
+            return False, {}, str(msg_intr)
+
+        meta_payload, _meta_seen_at, msg_meta = self._wait_fresh_vision1_meta_snapshot(timeout_sec=VISION1_META_WAIT_SEC)
+        if meta_payload is None:
+            return False, {}, str(msg_meta)
+
+        detections = meta_payload.get("detections", []) if isinstance(meta_payload, dict) else []
+        picked = self._pick_robot_action_detection_for_ingredient(detections, code)
+        if picked is None:
+            available = []
+            for raw_det in detections if isinstance(detections, list) else []:
+                parsed = self._parse_robot_action_detection(raw_det)
+                if parsed is None:
+                    continue
+                name = str(parsed.get("class_name", "") or "").strip().lower()
+                if name:
+                    available.append(name)
+            if available:
+                available_text = ", ".join(sorted(set(available)))
+            else:
+                available_text = "-"
+            return False, {}, f"vision1에서 재료({code})를 찾지 못했습니다. 감지 클래스: {available_text}"
+
+        try:
+            u = float(picked["center_uv"][0])
+            v = float(picked["center_uv"][1])
+            depth_m = float(picked["depth_m"])
+            conf = float(picked.get("confidence", 0.0))
+        except Exception:
+            return False, {}, "선택된 비전 타겟의 형식이 올바르지 않습니다."
+
+        z_mm = depth_m * 1000.0
+        robot_xyz, xyz_msg = self._vision1_uvz_to_robot_xyz_mm(u, v, z_mm)
+        if robot_xyz is None:
+            return False, {}, str(xyz_msg or "UVZ->로봇XYZ 변환 실패")
+
+        base_x, base_y, base_z = [float(vv) for vv in robot_xyz[:3]]
+        tx, ty, tz = base_x, base_y, base_z
+        menu_ox, menu_oy, menu_oz = 0.0, 0.0, 0.0
+        if bool(apply_menu_offset):
+            offset_map = self._load_menu_xyz_offsets(menu_offsets=menu_offsets)
+            menu_ox, menu_oy, menu_oz = self._get_menu_xyz_offset(code, offset_map)
+            tx += float(menu_ox)
+            ty += float(menu_oy)
+            tz += float(menu_oz)
+
+        payload = {
+            "ingredient_code": str(code),
+            "class_name": str(picked.get("class_name", "") or ""),
+            "confidence": float(conf),
+            "target_uv": [float(u), float(v)],
+            "target_depth_m": float(depth_m),
+            "base_robot_xyz_mm": [float(base_x), float(base_y), float(base_z)],
+            "menu_offset_xyz_mm": [float(menu_ox), float(menu_oy), float(menu_oz)],
+            "resolved_robot_xyz_mm": [float(tx), float(ty), float(tz)],
+            "apply_menu_offset": bool(apply_menu_offset),
+            "affine_path": str(self._vision1_affine_path or ""),
+            "camera_info_topic": str(self._vision1_camera_info_topic_in_use or VISION1_CAMERA_INFO_TOPIC_PRIMARY),
+            "vision_meta_topic": str(VISION1_META_TOPIC),
+        }
+        msg = (
+            f"비전 기준좌표 계산 완료({code}): XYZ=({tx:.1f},{ty:.1f},{tz:.1f}), "
+            f"base=({base_x:.1f},{base_y:.1f},{base_z:.1f}), "
+            f"menu_offset=({float(menu_ox):.1f},{float(menu_oy):.1f},{float(menu_oz):.1f}), "
+            f"UV=({u:.1f},{v:.1f}), depth={z_mm:.1f}mm, conf={float(conf):.2f}"
+        )
+        return True, payload, msg
 
     def _parse_menu_offset_map(self, raw_map):
         parsed = {}
@@ -4473,6 +4751,16 @@ class RobotBackend:
 
         if self._worker_thread is not None:
             self._worker_thread.join(timeout=2.0)
+        if self._spin_thread is not None:
+            self._spin_thread.join(timeout=1.0)
+        if self._vision_spin_thread is not None:
+            self._vision_spin_thread.join(timeout=1.0)
+
+        try:
+            if self._vision_executor is not None:
+                self._vision_executor.shutdown(timeout_sec=0.5)
+        except Exception:
+            pass
 
         try:
             self._stop_bartender_action_sources()
@@ -4494,6 +4782,12 @@ class RobotBackend:
         try:
             if self._mode_node is not None:
                 self._mode_node.destroy_node()
+        except Exception:
+            pass
+
+        try:
+            if self._vision_bridge_node is not None:
+                self._vision_bridge_node.destroy_node()
         except Exception:
             pass
 

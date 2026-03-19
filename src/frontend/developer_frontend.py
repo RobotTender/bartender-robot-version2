@@ -271,6 +271,12 @@ BARTENDER_MENU_LABELS = {
     "beer": "맥주",
     "somaek": "소맥",
 }
+BARTENDER_ROBOT_ACTION_TEST_MENU_ORDER = ("soju", "beer", "somaek")
+BARTENDER_ROBOT_ACTION_TEST_RECIPES = {
+    "soju": {"soju": 50.0},
+    "beer": {"beer": 200.0},
+    "somaek": {"soju": 60.0, "beer": 140.0},
+}
 BARTENDER_MENU_OFFSET_EXCLUDED_CODES = {"somaek"}
 BARTENDER_MENU_OFFSET_EXCLUDED_CODES_NORM = {str(v).strip().lower() for v in BARTENDER_MENU_OFFSET_EXCLUDED_CODES}
 BARTENDER_INGREDIENT_ALIASES = {
@@ -299,6 +305,7 @@ ROBOT_ACTION_POSE_DEFAULTS = {
     "offsets_xyz_mm": {
         "pick_approach_offset": [0.0, -50.0, 0.0],
         "pick_grasp_offset": [0.0, 0.0, 0.0],
+        "pick_lift_offset": [0.0, 0.0, 100.0],
         "place_offset": [0.0, 0.0, 0.0],
         "retreat_offset": [-20.0, -50.0, 0.0],
     },
@@ -324,9 +331,11 @@ ROBOT_ACTION_POSE_LEGACY_POSE_KEY_MAP = {
 ROBOT_ACTION_POSE_LEGACY_OFFSET_KEY_MAP = {
     "ingredient_pick_approach": "pick_approach_offset",
     "ingredient_pick_grasp": "pick_grasp_offset",
+    "ingredient_pick_lift": "pick_lift_offset",
     "ingredient_place": "place_offset",
     "ingredient_retreat": "retreat_offset",
 }
+ROBOT_ACTION_GRIPPER_OPEN_MM_DEFAULT = 109.0
 
 
 def _canonical_robot_action_pose_key(raw_key):
@@ -361,6 +370,13 @@ ROBOT_ACTION_POSE_ROW_DEFS = [
         "desc": "vision1 중심좌표/깊이에서 실시간 계산(보기 전용)",
     },
     {
+        "section": "[1] PICK/준비",
+        "type": "gripper_open_action",
+        "var_name": "GRIPPER_OPEN_MM_DEFAULT",
+        "label": "병 파지 전 그리퍼 오픈",
+        "desc": "클릭 시 그리퍼를 열어 병 파지를 준비합니다.",
+    },
+    {
         "section": "[1] PICK",
         "type": "vision_offset",
         "config_group": "offsets_xyz_mm",
@@ -376,6 +392,22 @@ ROBOT_ACTION_POSE_ROW_DEFS = [
         "config_key": "pick_grasp_offset",
         "var_name": "pick_grasp_offset",
         "label": "병 파지(target_2) 오프셋",
+        "desc": "비전 타겟 기준 상대 오프셋(mm)",
+    },
+    {
+        "section": "[1] PICK",
+        "type": "gripper_close_action",
+        "var_name": "menu_gripper_close_mm(ingredient)",
+        "label": "병 파지(그리퍼 닫힘)",
+        "desc": "대상 재료를 선택해 메뉴별 파지 거리(mm)로 닫습니다.",
+    },
+    {
+        "section": "[1] PICK",
+        "type": "vision_offset",
+        "config_group": "offsets_xyz_mm",
+        "config_key": "pick_lift_offset",
+        "var_name": "pick_lift_offset",
+        "label": "병 파지 후 업(target_3) 오프셋",
         "desc": "비전 타겟 기준 상대 오프셋(mm)",
     },
     {
@@ -529,7 +561,7 @@ VISION_OVERLAY_REFRESH_FORCE_STALE_SEC = max(
 )
 # 카메라 프레임 수신 지연(stale) 판정 기준(비전 전용)
 VISION_CAMERA_STALE_SEC = max(0.5, float(os.environ.get("VISION_CAMERA_STALE_SEC", "5.0")))
-VISION_RENDER_STALL_WARN_MS = max(100.0, float(os.environ.get("VISION_RENDER_STALL_WARN_MS", "250.0")))
+VISION_RENDER_STALL_WARN_MS = max(1000.0, float(os.environ.get("VISION_RENDER_STALL_WARN_MS", "1000.0")))
 VISION_RENDER_STALL_LOG_COOLDOWN_SEC = max(
     0.5, float(os.environ.get("VISION_RENDER_STALL_LOG_COOLDOWN_SEC", "1.0"))
 )
@@ -2212,6 +2244,10 @@ class App(QMainWindow, form):
             return self._format_xyz_summary(values)
         if row_type == "vision_target":
             return "실시간 계산값(보기 전용)"
+        if row_type == "gripper_open_action":
+            return f"{float(ROBOT_ACTION_GRIPPER_OPEN_MM_DEFAULT):.1f}mm (고정)"
+        if row_type == "gripper_close_action":
+            return "대상 선택 필요(클릭 시 선택)"
         return "-"
 
     def _open_robot_action_pose_dialog(self):
@@ -2229,6 +2265,7 @@ class App(QMainWindow, form):
             (
                 "robot_action_planner 시퀀스에서 사용하는 포지션/상대오프셋 관리 화면입니다.\n"
                 "현재값 칸을 클릭하면 값을 수정할 수 있으며, 수정/티칭해도 즉시 저장되지 않습니다.\n"
+                "비전 오프셋 이동은 반드시 [재료 병 비전 타겟 계산]의 [위치받아오기] 이후에만 가능합니다.\n"
                 "[저장] 버튼을 눌러야 파일에 반영됩니다.\n"
                 "새로고침은 저장된 값만 다시 불러옵니다."
             ),
@@ -2278,9 +2315,20 @@ class App(QMainWindow, form):
 
         row_states = []
         save_state = {"saving": False, "done": False, "ok": False, "msg": "", "thread": None}
+        vision_target_state = {
+            "payload": None,
+            "ingredient_code": "",
+            "ingredient_label": "",
+        }
+        gripper_target_state = {
+            "ingredient_code": "",
+            "ingredient_label": "",
+        }
         runtime_caps = {
             "can_move_posj": False,
             "can_move_posx": False,
+            "can_move_vision": False,
+            "can_move_gripper": False,
             "can_teach_pose": False,
         }
 
@@ -2302,6 +2350,8 @@ class App(QMainWindow, form):
 
             can_move_posj = bool(backend_ready and hasattr(backend, "send_move_joint"))
             can_move_posx = bool(backend_ready and hasattr(backend, "send_move_cartesian"))
+            can_move_vision = bool(backend_ready and hasattr(backend, "get_robot_action_vision_target_xyz"))
+            can_move_gripper = bool(backend_ready and hasattr(backend, "send_gripper_move"))
             mode_ok_for_move = True
             mode_value = None
             mode_seen_at = None
@@ -2319,6 +2369,8 @@ class App(QMainWindow, form):
                     mode_ok_for_move = False
             can_move_posj = bool(can_move_posj and mode_ok_for_move)
             can_move_posx = bool(can_move_posx and mode_ok_for_move)
+            can_move_vision = bool(can_move_vision and mode_ok_for_move)
+            can_move_gripper = bool(can_move_gripper and mode_ok_for_move)
             can_teach_pose = bool(
                 backend_ready
                 and mode_ok_for_move
@@ -2327,6 +2379,8 @@ class App(QMainWindow, form):
             )
             runtime_caps["can_move_posj"] = can_move_posj
             runtime_caps["can_move_posx"] = can_move_posx
+            runtime_caps["can_move_vision"] = can_move_vision
+            runtime_caps["can_move_gripper"] = can_move_gripper
             runtime_caps["can_teach_pose"] = can_teach_pose
 
         def _is_row_teachable(row_state):
@@ -2339,18 +2393,60 @@ class App(QMainWindow, form):
                 return bool(runtime_caps.get("can_move_posj"))
             if row_type == "posx":
                 return bool(runtime_caps.get("can_move_posx"))
+            if row_type == "vision_target":
+                return bool(runtime_caps.get("can_move_vision"))
+            if row_type == "vision_offset":
+                return bool(runtime_caps.get("can_move_vision")) and isinstance(vision_target_state.get("payload"), dict)
+            if row_type in ("gripper_open_action", "gripper_close_action"):
+                return bool(runtime_caps.get("can_move_gripper"))
             return False
 
         def _refresh_row(row_state, status_text: str | None = None):
             value_item = row_state.get("value_item")
             state_item = row_state.get("state_item")
+            row_type = str(row_state["def"].get("type", "") or "").strip().lower()
             if value_item is not None:
-                value_item.setText(self._format_robot_action_pose_row_value(row_state["def"], draft_cfg))
+                if row_type == "vision_target":
+                    payload = vision_target_state.get("payload")
+                    if isinstance(payload, dict):
+                        xyz = payload.get("resolved_robot_xyz_mm", [])
+                        ingredient_label = str(vision_target_state.get("ingredient_label", "") or "-")
+                        try:
+                            tx = float(xyz[0])
+                            ty = float(xyz[1])
+                            tz = float(xyz[2])
+                            value_item.setText(f"기준XYZ(mm): X={tx:.1f}, Y={ty:.1f}, Z={tz:.1f} ({ingredient_label})")
+                        except Exception:
+                            value_item.setText("기준XYZ 수신됨")
+                    else:
+                        value_item.setText("기준좌표 미수신(위치받아오기 필요)")
+                elif row_type == "gripper_open_action":
+                    value_item.setText(f"{float(ROBOT_ACTION_GRIPPER_OPEN_MM_DEFAULT):.1f}mm (고정)")
+                elif row_type == "gripper_close_action":
+                    ingredient_code = str(gripper_target_state.get("ingredient_code", "") or "").strip().lower()
+                    ingredient_label = str(gripper_target_state.get("ingredient_label", "") or "").strip()
+                    if ingredient_code:
+                        close_mm = float(self._get_menu_gripper_close_mm(ingredient_code))
+                        value_item.setText(f"대상={ingredient_label}({ingredient_code}), 파지={close_mm:.1f}mm")
+                    else:
+                        value_item.setText("대상 미선택(클릭 시 선택)")
+                else:
+                    value_item.setText(self._format_robot_action_pose_row_value(row_state["def"], draft_cfg))
             if state_item is not None:
                 if status_text is not None:
                     state_item.setText(str(status_text))
-                elif str(row_state["def"].get("type", "") or "").strip().lower() == "vision_target":
-                    state_item.setText("참조전용")
+                elif row_type == "vision_target":
+                    state_item.setText("기준좌표 수신됨" if isinstance(vision_target_state.get("payload"), dict) else "기준좌표 필요")
+                elif row_type == "vision_offset":
+                    state_item.setText("저장됨" if isinstance(vision_target_state.get("payload"), dict) else "기준좌표 필요")
+                elif row_type == "gripper_open_action":
+                    state_item.setText("실행 가능")
+                elif row_type == "gripper_close_action":
+                    state_item.setText(
+                        "실행 가능"
+                        if str(gripper_target_state.get("ingredient_code", "") or "").strip()
+                        else "대상 선택 필요"
+                    )
                 else:
                     state_item.setText("저장됨")
             move_btn = row_state.get("move_btn")
@@ -2364,6 +2460,54 @@ class App(QMainWindow, form):
             _refresh_runtime_caps()
             for row_state in row_states:
                 _refresh_row(row_state, status_text=status_text if _is_row_editable(row_state) else None)
+
+        def _default_vision_ingredient_code():
+            result = self._voice_last_result if isinstance(self._voice_last_result, dict) else {}
+            recipe = result.get("recipe", {})
+            if isinstance(recipe, dict):
+                for key, value in recipe.items():
+                    code = str(key or "").strip().lower()
+                    if code not in ("soju", "beer"):
+                        continue
+                    try:
+                        amount = float(value)
+                    except Exception:
+                        amount = 0.0
+                    if amount > 0.0:
+                        return code
+            return "beer"
+
+        def _ask_vision_ingredient(row_label: str, prompt_text: str = "비전 기준으로 사용할 재료를 선택하세요:"):
+            options = []
+            option_to_code = {}
+            ordered_codes = ("soju", "beer")
+            for code in ordered_codes:
+                label = str(BARTENDER_MENU_LABELS.get(code, code) or code)
+                item = f"{label} ({code})"
+                options.append(item)
+                option_to_code[item] = code
+            if not options:
+                return "", ""
+
+            default_code = _default_vision_ingredient_code()
+            default_index = 0
+            for idx, item in enumerate(options):
+                if option_to_code.get(item) == default_code:
+                    default_index = idx
+                    break
+            selected_item, ok_select = QInputDialog.getItem(
+                dialog,
+                f"{row_label} 재료 선택",
+                str(prompt_text or "재료를 선택하세요:"),
+                options,
+                int(default_index),
+                False,
+            )
+            if not ok_select:
+                return "", ""
+            selected_code = str(option_to_code.get(str(selected_item), "") or "").strip().lower()
+            selected_label = str(BARTENDER_MENU_LABELS.get(selected_code, selected_code) or selected_code)
+            return selected_code, selected_label
 
         def _edit_row(row_state):
             if save_state["saving"]:
@@ -2438,14 +2582,14 @@ class App(QMainWindow, form):
             row_def = row_state["def"]
             row_type = str(row_def.get("type", "") or "").strip().lower()
             row_label = str(row_def.get("label", row_def.get("var_name", "-")))
-            values = self._get_robot_action_pose_entry(draft_cfg, row_def)
-            if values is None:
-                QMessageBox.warning(dialog, "포지션 이동", f"{row_label} 값이 없습니다.", QMessageBox.Ok)
-                return
             if self.backend is None:
                 QMessageBox.warning(dialog, "포지션 이동", "백엔드 초기화 중입니다.", QMessageBox.Ok)
                 return
             if row_type == "posj":
+                values = self._get_robot_action_pose_entry(draft_cfg, row_def)
+                if values is None:
+                    QMessageBox.warning(dialog, "포지션 이동", f"{row_label} 값이 없습니다.", QMessageBox.Ok)
+                    return
                 if not hasattr(self.backend, "send_move_joint"):
                     QMessageBox.warning(dialog, "포지션 이동", "백엔드가 조인트 이동을 지원하지 않습니다.", QMessageBox.Ok)
                     return
@@ -2460,6 +2604,10 @@ class App(QMainWindow, form):
                 speed = self._motion_speed_for_command()
                 ok_move, msg_move = self.backend.send_move_joint(*values, vel=speed, acc=speed)
             elif row_type == "posx":
+                values = self._get_robot_action_pose_entry(draft_cfg, row_def)
+                if values is None:
+                    QMessageBox.warning(dialog, "포지션 이동", f"{row_label} 값이 없습니다.", QMessageBox.Ok)
+                    return
                 if not hasattr(self.backend, "send_move_cartesian"):
                     QMessageBox.warning(dialog, "포지션 이동", "백엔드가 카테시안 이동을 지원하지 않습니다.", QMessageBox.Ok)
                     return
@@ -2473,6 +2621,160 @@ class App(QMainWindow, form):
                     return
                 speed = self._motion_speed_for_command()
                 ok_move, msg_move = self.backend.send_move_cartesian(*values, vel=speed, acc=speed)
+            elif row_type == "vision_target":
+                if not hasattr(self.backend, "get_robot_action_vision_target_xyz"):
+                    QMessageBox.warning(dialog, "비전 기준좌표", "백엔드가 비전 기준좌표 계산을 지원하지 않습니다.", QMessageBox.Ok)
+                    return
+                ingredient_code, ingredient_label = _ask_vision_ingredient(row_label)
+                if not ingredient_code:
+                    return
+                reply = QMessageBox.question(
+                    dialog,
+                    "비전 기준좌표 수신 확인",
+                    (
+                        "비전에서 선택 재료를 다시 감지해 기준좌표를 계산합니다.\n"
+                        "캘리브레이션(affine + camera_info)과 메뉴 오프셋이 적용됩니다.\n\n"
+                        f"재료: {ingredient_label}\n"
+                        "계속할까요?"
+                    ),
+                    QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.No,
+                )
+                if reply != QMessageBox.Yes:
+                    return
+
+                ok_calc, payload_calc, msg_calc = self.backend.get_robot_action_vision_target_xyz(
+                    ingredient_code=ingredient_code,
+                    menu_offsets=self._build_menu_offset_payload(),
+                    apply_menu_offset=True,
+                )
+                if not ok_calc:
+                    vision_target_state["payload"] = None
+                    vision_target_state["ingredient_code"] = ""
+                    vision_target_state["ingredient_label"] = ""
+                    _refresh_all_rows()
+                    QMessageBox.warning(dialog, "비전 기준좌표", str(msg_calc or "기준좌표 계산 실패"), QMessageBox.Ok)
+                    _set_status(f"{row_label}: {msg_calc}")
+                    self.append_log(f"[액션포지션] {row_label} 기준좌표 수신 실패: {msg_calc}\n")
+                    return
+
+                vision_target_state["payload"] = dict(payload_calc) if isinstance(payload_calc, dict) else {}
+                vision_target_state["ingredient_code"] = str(ingredient_code)
+                vision_target_state["ingredient_label"] = str(ingredient_label)
+                _refresh_all_rows()
+                _refresh_row(row_state, status_text="기준좌표 수신됨")
+                _set_status(f"{row_label}: {msg_calc}")
+                self.append_log(f"[액션포지션] {row_label} 기준좌표 수신: {msg_calc}\n")
+                return
+            elif row_type == "gripper_open_action":
+                if not hasattr(self.backend, "send_gripper_move"):
+                    QMessageBox.warning(dialog, "그리퍼 실행", "백엔드가 그리퍼 이동을 지원하지 않습니다.", QMessageBox.Ok)
+                    return
+                open_mm = float(ROBOT_ACTION_GRIPPER_OPEN_MM_DEFAULT)
+                if not self._confirm_motion_with_values(
+                    "그리퍼 오픈 확인",
+                    "안내: 로봇 그리퍼가 실제로 이동합니다.",
+                    ["Open(mm)"],
+                    [open_mm],
+                    "액션포지션 그리퍼 오픈",
+                ):
+                    return
+                ok_move, msg_move = self.backend.send_gripper_move(open_mm)
+            elif row_type == "gripper_close_action":
+                if not hasattr(self.backend, "send_gripper_move"):
+                    QMessageBox.warning(dialog, "그리퍼 실행", "백엔드가 그리퍼 이동을 지원하지 않습니다.", QMessageBox.Ok)
+                    return
+                ingredient_code, ingredient_label = _ask_vision_ingredient(
+                    row_label,
+                    prompt_text="파지할 목표 재료를 선택하세요:",
+                )
+                if not ingredient_code:
+                    return
+                close_mm = float(self._get_menu_gripper_close_mm(ingredient_code))
+                if not self._confirm_motion_with_values(
+                    "그리퍼 파지 확인",
+                    "안내: 선택 재료 기준 파지(mm)로 그리퍼가 실제로 이동합니다.",
+                    ["Close(mm)"],
+                    [close_mm],
+                    f"액션포지션 그리퍼 파지 ({ingredient_label})",
+                ):
+                    return
+                ok_move, msg_move = self.backend.send_gripper_move(close_mm)
+                if ok_move:
+                    gripper_target_state["ingredient_code"] = str(ingredient_code)
+                    gripper_target_state["ingredient_label"] = str(ingredient_label)
+                msg_move = f"{msg_move} | target={ingredient_label}({ingredient_code}), close={close_mm:.1f}mm"
+            elif row_type == "vision_offset":
+                values = self._get_robot_action_pose_entry(draft_cfg, row_def)
+                if values is None:
+                    QMessageBox.warning(dialog, "비전 오프셋 이동", f"{row_label} 값이 없습니다.", QMessageBox.Ok)
+                    return
+                payload = vision_target_state.get("payload")
+                if not isinstance(payload, dict):
+                    QMessageBox.warning(dialog, "비전 오프셋 이동", "먼저 '재료 병 비전 타겟 계산'에서 위치받아오기를 실행하세요.", QMessageBox.Ok)
+                    return
+                base_xyz = payload.get("resolved_robot_xyz_mm")
+                if not isinstance(base_xyz, (list, tuple)) or len(base_xyz) < 3:
+                    QMessageBox.warning(dialog, "비전 오프셋 이동", "수신된 기준좌표가 올바르지 않습니다. 다시 위치받아오기를 실행하세요.", QMessageBox.Ok)
+                    return
+                try:
+                    bx, by, bz = float(base_xyz[0]), float(base_xyz[1]), float(base_xyz[2])
+                    ox, oy, oz = float(values[0]), float(values[1]), float(values[2])
+                    tx, ty, tz = bx + ox, by + oy, bz + oz
+                except Exception:
+                    QMessageBox.warning(dialog, "비전 오프셋 이동", "기준좌표/오프셋 값이 올바르지 않습니다.", QMessageBox.Ok)
+                    return
+
+                abc = None
+                abc_source = ""
+                if hasattr(self.backend, "_resolve_robot_action_abc"):
+                    try:
+                        abc_vals, src = self.backend._resolve_robot_action_abc()
+                        if isinstance(abc_vals, (list, tuple)) and len(abc_vals) >= 3:
+                            abc = [float(abc_vals[0]), float(abc_vals[1]), float(abc_vals[2])]
+                            abc_source = str(src or "").strip()
+                    except Exception:
+                        abc = None
+                if abc is None:
+                    _posj, posx = self._get_current_pose_defaults()
+                    if not isinstance(posx, (list, tuple)) or len(posx) < 6:
+                        QMessageBox.warning(dialog, "비전 오프셋 이동", "현재 TCP 자세(ABC)를 읽지 못했습니다.", QMessageBox.Ok)
+                        return
+                    try:
+                        abc = [float(posx[3]), float(posx[4]), float(posx[5])]
+                        abc_source = "UI current_posx"
+                    except Exception:
+                        QMessageBox.warning(dialog, "비전 오프셋 이동", "현재 TCP 자세(ABC) 파싱에 실패했습니다.", QMessageBox.Ok)
+                        return
+
+                ingredient_label = str(vision_target_state.get("ingredient_label", "") or "-")
+                if not self._confirm_motion_with_values(
+                    "비전 오프셋 이동 확인",
+                    (
+                        "안내: 로봇이 실제로 이동합니다.\n"
+                        f"기준좌표({ingredient_label}) + {row_label} 오프셋을 적용한 목표입니다."
+                    ),
+                    ["X", "Y", "Z"],
+                    [tx, ty, tz],
+                    "액션포지션 비전오프셋 이동",
+                ):
+                    return
+                speed = self._motion_speed_for_command()
+                ok_move, msg_move = self.backend.send_move_cartesian(
+                    float(tx),
+                    float(ty),
+                    float(tz),
+                    float(abc[0]),
+                    float(abc[1]),
+                    float(abc[2]),
+                    vel=speed,
+                    acc=speed,
+                )
+                msg_move = (
+                    f"{msg_move} | base=({bx:.1f},{by:.1f},{bz:.1f}) + "
+                    f"offset=({ox:.1f},{oy:.1f},{oz:.1f}) -> target=({tx:.1f},{ty:.1f},{tz:.1f}), "
+                    f"ABC source={abc_source or '-'}"
+                )
             else:
                 return
             _refresh_row(row_state, status_text=("이동요청 완료" if ok_move else "이동 실패"))
@@ -2504,10 +2806,25 @@ class App(QMainWindow, form):
                 teach_btn.setMinimumWidth(56)
                 button_layout.addWidget(move_btn)
                 button_layout.addWidget(teach_btn)
+            elif row_type == "vision_target":
+                move_btn = QPushButton("위치받아오기", button_wrap)
+                move_btn.setMinimumWidth(94)
+                button_layout.addWidget(move_btn)
             elif row_type == "vision_offset":
+                move_btn = QPushButton("이동", button_wrap)
+                move_btn.setMinimumWidth(52)
                 ro_label = QLabel("값클릭 수정", button_wrap)
                 ro_label.setStyleSheet("color: #475569;")
+                button_layout.addWidget(move_btn)
                 button_layout.addWidget(ro_label)
+            elif row_type == "gripper_open_action":
+                move_btn = QPushButton("오픈", button_wrap)
+                move_btn.setMinimumWidth(62)
+                button_layout.addWidget(move_btn)
+            elif row_type == "gripper_close_action":
+                move_btn = QPushButton("파지", button_wrap)
+                move_btn.setMinimumWidth(62)
+                button_layout.addWidget(move_btn)
             else:
                 ro_label = QLabel("보기", button_wrap)
                 ro_label.setStyleSheet("color: #475569;")
@@ -2546,6 +2863,11 @@ class App(QMainWindow, form):
             saved_cfg = self._sanitize_robot_action_pose_config(loaded)
             draft_cfg = self._sanitize_robot_action_pose_config(saved_cfg)
             self._robot_action_pose_config = self._sanitize_robot_action_pose_config(saved_cfg)
+            vision_target_state["payload"] = None
+            vision_target_state["ingredient_code"] = ""
+            vision_target_state["ingredient_label"] = ""
+            gripper_target_state["ingredient_code"] = ""
+            gripper_target_state["ingredient_label"] = ""
             _refresh_all_rows(status_text="저장값 로드")
             _set_status("저장된 포지션 값을 다시 불러왔습니다.")
 
@@ -3053,17 +3375,74 @@ class App(QMainWindow, form):
             self._append_voice_order_log("로봇동작 단독 테스트는 메뉴얼모드에서만 실행할 수 있습니다.", level="warning")
             return
 
+        menu_codes = [
+            str(code).strip().lower()
+            for code in BARTENDER_ROBOT_ACTION_TEST_MENU_ORDER
+            if str(code).strip().lower() in BARTENDER_ROBOT_ACTION_TEST_RECIPES
+        ]
+        if not menu_codes:
+            self._append_voice_order_log("로봇동작 테스트 메뉴 설정이 비어 있습니다.", level="error")
+            return
+
+        menu_items = []
+        menu_code_by_item = {}
+        for code in menu_codes:
+            label = str(BARTENDER_MENU_LABELS.get(code, code) or code)
+            recipe = dict(BARTENDER_ROBOT_ACTION_TEST_RECIPES.get(code, {}) or {})
+            recipe_chunks = []
+            for ingredient_code, amount in recipe.items():
+                ingredient_label = str(BARTENDER_MENU_LABELS.get(str(ingredient_code), ingredient_code) or ingredient_code)
+                try:
+                    amount_txt = f"{float(amount):g}"
+                except Exception:
+                    amount_txt = str(amount)
+                recipe_chunks.append(f"{ingredient_label} {amount_txt}ml")
+            item_text = f"{label} ({' + '.join(recipe_chunks)})" if recipe_chunks else label
+            menu_items.append(item_text)
+            menu_code_by_item[item_text] = code
+
+        current_index = 1 if len(menu_items) > 1 else 0
+        selected_item, ok_select = QInputDialog.getItem(
+            self,
+            "로봇동작 단독 테스트 메뉴 선택",
+            "테스트할 메뉴를 선택하세요:",
+            menu_items,
+            current_index,
+            False,
+        )
+        if not ok_select:
+            return
+
+        selected_menu = str(menu_code_by_item.get(str(selected_item), "") or "").strip().lower()
+        selected_menu_label = str(BARTENDER_MENU_LABELS.get(selected_menu, selected_menu) or selected_menu)
+        selected_recipe = dict(BARTENDER_ROBOT_ACTION_TEST_RECIPES.get(selected_menu, {}) or {})
+        if not selected_menu or (not selected_recipe):
+            self._append_voice_order_log("선택한 메뉴의 레시피를 불러오지 못했습니다.", level="error")
+            return
+
         result = {
             "status": "success",
-            "selected_menu": "beer",
-            "selected_menu_label": "맥주",
-            "recipe": {"beer": 200},
+            "selected_menu": selected_menu,
+            "selected_menu_label": selected_menu_label,
+            "recipe": selected_recipe,
         }
-        menu_name = "맥주(고정 레시피)"
+        recipe_text = " + ".join(
+            f"{BARTENDER_MENU_LABELS.get(str(code), str(code))} {float(amount):g}ml"
+            for code, amount in selected_recipe.items()
+        )
+        extra_note = "소맥 테스트는 소주 1회 -> 맥주 1회 순서로 실행됩니다." if selected_menu == "somaek" else ""
+        confirm_message = (
+            "메뉴얼모드에서 7번 로봇 동작만 실행합니다.\n"
+            f"선택 메뉴: {selected_menu_label}\n"
+            f"레시피: {recipe_text}"
+        )
+        if extra_note:
+            confirm_message += f"\n{extra_note}"
+        confirm_message += "\n실행하시겠습니까?"
         reply = QMessageBox.question(
             self,
             "로봇동작 단독 테스트",
-            f"메뉴얼모드에서 7번 로봇 동작만 실행합니다.\n선택 메뉴: {menu_name}\n실행하시겠습니까?",
+            confirm_message,
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No,
         )
@@ -11063,21 +11442,34 @@ class App(QMainWindow, form):
                 pass
             self.append_log(f"[캘리브레이션{panel}] 기존 헬퍼 프로세스 정리: PID {parts[0]}\n")
 
+    def _vision_subscription_node(self):
+        if self.backend is None:
+            return None
+        getter = getattr(self.backend, "get_vision_subscription_node", None)
+        if callable(getter):
+            try:
+                node = getter()
+            except Exception:
+                node = None
+            if node is not None:
+                return node
+        return getattr(self.backend, "robot_controller", None)
+
     def _current_vision_image_topic(self):
-        node = getattr(self.backend, "robot_controller", None) if self.backend is not None else None
+        node = self._vision_subscription_node()
         if node is not None:
             return self._assigned_raw_topic_for_serial(self._vision_assigned_serial_1, node)
         return self._assigned_topic_for_serial(self._vision_assigned_serial_1)
 
     def _current_vision_image_topic_2(self):
-        node = getattr(self.backend, "robot_controller", None) if self.backend is not None else None
+        node = self._vision_subscription_node()
         if node is not None:
             return self._assigned_raw_topic_for_serial(self._vision_assigned_serial_2, node)
         return self._assigned_topic_for_serial(self._vision_assigned_serial_2)
 
     def _build_vision_meta_process_cmd(self, panel_index: int):
         panel = 2 if int(panel_index) == 2 else 1
-        node = getattr(self.backend, "robot_controller", None) if self.backend is not None else None
+        node = self._vision_subscription_node()
         if node is None:
             return None
         serial = self._vision_assigned_serial_2 if panel == 2 else self._vision_assigned_serial_1
@@ -11167,7 +11559,7 @@ class App(QMainWindow, form):
             self._external_vision_started_by_ui_1 = False
 
     def _teardown_external_vision_bridge_panel(self, panel_index: int):
-        node = getattr(self.backend, "robot_controller", None) if self.backend is not None else None
+        node = self._vision_subscription_node()
 
         def _destroy(sub):
             if sub is None:
@@ -11219,7 +11611,7 @@ class App(QMainWindow, form):
 
     def _build_calibration_process_cmd(self, panel_index: int):
         panel = 2 if int(panel_index) == 2 else 1
-        node = getattr(self.backend, "robot_controller", None) if self.backend is not None else None
+        node = self._vision_subscription_node()
         if node is None:
             return None
         serial = self._vision_assigned_serial_2 if panel == 2 else self._vision_assigned_serial_1
@@ -11250,7 +11642,7 @@ class App(QMainWindow, form):
 
     def _ensure_calibration_process(self, panel_index: int):
         panel = 2 if int(panel_index) == 2 else 1
-        node = getattr(self.backend, "robot_controller", None) if self.backend is not None else None
+        node = self._vision_subscription_node()
         if node is None:
             return False
         cmd = self._build_calibration_process_cmd(panel)
@@ -11518,7 +11910,7 @@ class App(QMainWindow, form):
     def _setup_external_vision_bridge_panel(self, panel_index: int):
         if RosImageMsg is None or self.backend is None:
             return False
-        node = getattr(self.backend, "robot_controller", None)
+        node = self._vision_subscription_node()
         if node is None:
             return False
         panel = 2 if int(panel_index) == 2 else 1
@@ -11644,7 +12036,7 @@ class App(QMainWindow, form):
     def _rebind_external_vision_bridge_for_mode(self):
         if self.backend is None:
             return
-        node = getattr(self.backend, "robot_controller", None)
+        node = self._vision_subscription_node()
         if node is None:
             return
         self._teardown_external_vision_bridge()
@@ -11661,7 +12053,7 @@ class App(QMainWindow, form):
         panel = 2 if int(panel_index) == 2 else 1
         if self.backend is None:
             return
-        node = getattr(self.backend, "robot_controller", None)
+        node = self._vision_subscription_node()
         if node is None:
             return
         self._teardown_external_vision_bridge_panel(panel)
@@ -11688,7 +12080,7 @@ class App(QMainWindow, form):
             self._vision_state_text_2 = "오류"
             return False
 
-        node = getattr(self.backend, "robot_controller", None)
+        node = self._vision_subscription_node()
         if node is None:
             self._append_vision_log("ROS 노드 없음: 비전 원본 구독 실패")
             self._vision_state_text = "오류"

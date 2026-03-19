@@ -3,7 +3,7 @@
     "soju": {
       "label": "소주",
       "offset_xyz_mm": [
-        0.0,
+        30.0,
         0.0,
         0.0
       ],
@@ -11,15 +11,6 @@
     },
     "beer": {
       "label": "맥주",
-      "offset_xyz_mm": [
-        25.0,
-        50.0,
-        0.0
-      ],
-      "gripper_close_mm": 41.0
-    },
-    "somaek": {
-      "label": "소맥",
       "offset_xyz_mm": [
         0.0,
         0.0,

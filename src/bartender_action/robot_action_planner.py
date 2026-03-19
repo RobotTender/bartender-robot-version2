@@ -116,6 +116,7 @@ RUNTIME_POSE_DEFAULTS = {
 RUNTIME_OFFSET_DEFAULTS_XYZ_MM = {
     "pick_approach_offset": [0.0, -50.0, 0.0],
     "pick_grasp_offset": [0.0, 0.0, 0.0],
+    "pick_lift_offset": [0.0, 0.0, 100.0],
     "place_offset": [0.0, 0.0, 0.0],
     "retreat_offset": [-20.0, -50.0, 0.0],
 }
@@ -646,6 +647,8 @@ def _canonical_runtime_offset_key(raw_key: Any):
         return "pick_approach_offset"
     if key == "ingredient_pick_grasp":
         return "pick_grasp_offset"
+    if key == "ingredient_pick_lift":
+        return "pick_lift_offset"
     if key == "ingredient_place":
         return "place_offset"
     if key == "ingredient_retreat":
@@ -1213,6 +1216,7 @@ def _append_ingredient_sequence(api: PlannerSequenceApi, row: dict, seq_index: i
     pour_vertical_posj = _runtime_pose6(runtime_cfg, "pour_vertical_posj", POUR_VERTICAL_POSJ)
     pick_approach_offset = _runtime_offset_xyz(runtime_cfg, "pick_approach_offset", [0.0, -50.0, 0.0])
     pick_grasp_offset = _runtime_offset_xyz(runtime_cfg, "pick_grasp_offset", [0.0, 0.0, 0.0])
+    pick_lift_offset = _runtime_offset_xyz(runtime_cfg, "pick_lift_offset", [0.0, 0.0, 100.0])
     place_offset = _runtime_offset_xyz(runtime_cfg, "place_offset", [0.0, 0.0, 0.0])
     retreat_offset = _runtime_offset_xyz(runtime_cfg, "retreat_offset", [-20.0, -50.0, 0.0])
     _emit_sequence_log(api, f"[{ingredient_code}] 재료 시퀀스 시작(누적목표={target_volume_text})")
@@ -1249,11 +1253,19 @@ def _append_ingredient_sequence(api: PlannerSequenceApi, row: dict, seq_index: i
         dy_mm=float(pick_grasp_offset[1]),
         dz_mm=float(pick_grasp_offset[2]),
     )
+    pick_lift_posx = _resolved_target_pose(
+        api,
+        target_key=target_key,
+        dx_mm=float(pick_lift_offset[0]),
+        dy_mm=float(pick_lift_offset[1]),
+        dz_mm=float(pick_lift_offset[2]),
+    )
 
     api.movel_posx(pick_approach_posx, label=f"[{ingredient_code}] 병 접근(target_1)")
     api.movel_posx(pick_grasp_posx, label=f"[{ingredient_code}] 병 파지(target_2)", vel=40.0, acc=40.0)
     api.gripper(gripper_close_mm, label=f"[{ingredient_code}] 병 파지")
     api.wait_sec(3.0, label=f"[{ingredient_code}] 병 파지 대기")
+    api.movel_posx(pick_lift_posx, label=f"[{ingredient_code}] 병 파지 후 업(target_3)", vel=40.0, acc=40.0)
     api.movej_posj(service_ready_posj, label=f"[{ingredient_code}] 병 파지 후 준비자세")
     api.move_home(label=f"[{ingredient_code}] 병 파지 후 홈 이동")
     _emit_sequence_log(api, f"[{ingredient_code}] [1] PICK 종료")

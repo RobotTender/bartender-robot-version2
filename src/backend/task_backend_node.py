@@ -251,6 +251,7 @@ BARTENDER_ROBOT_ACTION_NATIVE = str(os.environ.get("BARTENDER_ROBOT_ACTION_NATIV
 VISION1_META_STALE_SEC = max(0.2, float(os.environ.get("BARTENDER_VISION1_META_STALE_SEC", "2.0")))
 VISION2_META_STALE_SEC = max(0.2, float(os.environ.get("BARTENDER_VISION2_META_STALE_SEC", "2.0")))
 VISION1_META_WAIT_SEC = max(0.5, float(os.environ.get("BARTENDER_VISION1_META_WAIT_SEC", "5.0")))
+VISION2_META_WAIT_SEC = max(0.5, float(os.environ.get("BARTENDER_VISION2_META_WAIT_SEC", "5.0")))
 BARTENDER_SEQUENCE_API_HOST = str(os.environ.get("BARTENDER_SEQUENCE_API_HOST", "127.0.0.1") or "").strip() or "127.0.0.1"
 try:
     BARTENDER_SEQUENCE_API_PORT = int(os.environ.get("BARTENDER_SEQUENCE_API_PORT", "8765"))
@@ -1043,6 +1044,29 @@ class NativeRobotActionApi:
             time.sleep(min(0.05, max(0.0, end_t - time.monotonic())))
         self._append_log(f"{label}({wait_s:.2f}s)")
 
+    def log_event(self, message: str, level: str = "info", enabled: bool = True):
+        text = str(message or "").strip()
+        if not text:
+            return
+        lvl = str(level or "info").strip().lower() or "info"
+        self._append_step(
+            {
+                "op": "log_event",
+                "label": text,
+                "level": lvl,
+                "enabled": bool(enabled),
+            }
+        )
+        if not bool(enabled):
+            return
+        if not self.execute_enabled:
+            self._append_log(f"{text}(계획)")
+            return
+        if lvl in ("error", "warn", "warning"):
+            self._append_log(f"[{lvl}] {text}")
+            return
+        self._append_log(text)
+
     def motion_stop(self, label: str = "모션 정지", stop_mode: int = 2, enabled: bool = True):
         mode = int(stop_mode)
         self._append_step(
@@ -1562,7 +1586,7 @@ class RobotBackend:
         self._executor.add_node(self.robot_controller)
         self._executor.add_node(self._dsr_node)
         self._executor.add_node(self._mode_node)
-
+    
         self._spin_thread = threading.Thread(target=self._spin_bg, daemon=True)
         self._spin_thread.start()
 
@@ -3552,6 +3576,12 @@ class RobotBackend:
             if not op:
                 return False, f"step[{idx}] op 누락"
 
+            if op == "log_event":
+                level = str(step.get("level", "info") or "info").strip().lower()
+                step_logs.append(f"{idx}:{label}")
+                _emit_robot_action_log(step_logs[-1], is_error=level in ("error", "warn", "warning"))
+                continue
+
             if op == "placeholder":
                 note = str(step.get("note", "") or "").strip()
                 step_logs.append(f"{idx}:{label}(placeholder{': ' + note if note else ''})")
@@ -3971,9 +4001,26 @@ class RobotBackend:
             topic = self._vision1_camera_info_topic_in_use or VISION1_CAMERA_INFO_TOPIC_PRIMARY
             return False, f"vision1 CameraInfo 미수신: {topic}"
 
+        vision2_payload = None
+        vision2_seen_at = None
+        vision2_deadline = time.monotonic() + float(VISION2_META_WAIT_SEC)
+        while time.monotonic() <= vision2_deadline:
+            vision2_payload, vision2_seen_at = self.get_vision2_meta_snapshot()
+            if vision2_payload is not None and vision2_seen_at is not None:
+                age = time.monotonic() - float(vision2_seen_at)
+                if age <= float(VISION2_META_STALE_SEC):
+                    break
+            time.sleep(0.05)
+        if vision2_payload is None or vision2_seen_at is None:
+            return False, f"vision2 메타데이터가 없습니다. 토픽 확인: {VISION2_META_TOPIC}"
+        vision2_age = time.monotonic() - float(vision2_seen_at)
+        if vision2_age > float(VISION2_META_STALE_SEC):
+            return False, f"vision2 메타데이터 지연: {vision2_age * 1000.0:.0f}ms"
+
         context = {
             "order_result": dict(order_result),
             "vision1_meta": dict(meta_payload),
+            "vision2_meta": dict(vision2_payload),
             "requested_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
         }
         if execute_enabled_override is None:

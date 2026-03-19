@@ -42,7 +42,7 @@ def build_parser(
         required=not bool(default_output_meta_topic),
     )
     parser.add_argument("--weights", default="")
-    parser.add_argument("--process-hz", type=float, default=8.0)
+    parser.add_argument("--process-hz", type=float, default=30.0)
     parser.add_argument("--conf", type=float, default=-1.0)
     parser.add_argument("--rotation-deg", type=int, default=0)
     return parser

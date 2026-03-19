@@ -158,10 +158,17 @@ YOLO_AUTO_LAUNCH_ALWAYS = os.environ.get("YOLO_AUTO_LAUNCH_ALWAYS", "0") == "1"
 YOLO_AUTO_LAUNCH_CMD = os.environ.get("YOLO_AUTO_LAUNCH_CMD", "").strip()
 CALIB_HELPER_AUTO_LAUNCH = os.environ.get("CALIB_HELPER_AUTO_LAUNCH", "0") == "1"
 CALIB_HELPER_CMD = os.environ.get("CALIB_HELPER_CMD", "").strip()
+FRONTEND_UI_PERF_LOG_PATH = os.path.abspath(
+    os.environ.get("FRONTEND_UI_PERF_LOG_PATH", os.path.join(PROJECT_ROOT, "logs", "frontend_ui_perf.log"))
+)
 
 POSITION_STALE_SEC = float(os.environ.get("UI_POSITION_STALE_SEC", "2.0"))
+UI_TICK_WARN_MS = max(20.0, float(os.environ.get("UI_TICK_WARN_MS", "120.0")))
+UI_TICK_WARN_COOLDOWN_SEC = max(0.5, float(os.environ.get("UI_TICK_WARN_COOLDOWN_SEC", "1.0")))
+UI_TICK_TRACE_ENABLED = os.environ.get("UI_TICK_TRACE", "0") == "1"
+UI_TICK_TRACE_MIN_MS = max(0.0, float(os.environ.get("UI_TICK_TRACE_MIN_MS", "0.0")))
 VISION_DECODE_MIN_INTERVAL_MS = max(
-    0.0, float(os.environ.get("VISION_DECODE_MIN_INTERVAL_MS", "40.0"))
+    0.0, float(os.environ.get("VISION_DECODE_MIN_INTERVAL_MS", "16.0"))
 )
 VISION_DECODE_MIN_INTERVAL_SEC = float(VISION_DECODE_MIN_INTERVAL_MS) / 1000.0
 STATE_FLASH_SEC = float(os.environ.get("UI_STATE_FLASH_SEC", "1.2"))
@@ -249,18 +256,255 @@ VOICE_ORDER_WEBUI_PORT = (
     ).strip()
     or "8000"
 )
+WEBUI_ORDER_START_SYNC_MIN_INTERVAL_SEC = max(
+    0.2, float(os.environ.get("WEBUI_ORDER_START_SYNC_MIN_INTERVAL_SEC", "0.6"))
+)
+WEBUI_ORDER_START_HTTP_TIMEOUT_SEC = max(
+    0.2, float(os.environ.get("WEBUI_ORDER_START_HTTP_TIMEOUT_SEC", "0.4"))
+)
 PARAM_DIR = os.path.join(PROJECT_ROOT, "config")
 PARAM_FILE = os.path.join(PARAM_DIR, "parameter.csv")
 MENU_OFFSET_CONFIG_PATH = os.path.join(PARAM_DIR, "menu_xyz_offsets.json")
+ROBOT_ACTION_POSE_CONFIG_PATH = os.path.join(PARAM_DIR, "robot_action_pose_config.json")
 BARTENDER_MENU_LABELS = {
     "soju": "소주",
     "beer": "맥주",
     "somaek": "소맥",
 }
+BARTENDER_MENU_OFFSET_EXCLUDED_CODES = {"somaek"}
+BARTENDER_MENU_OFFSET_EXCLUDED_CODES_NORM = {str(v).strip().lower() for v in BARTENDER_MENU_OFFSET_EXCLUDED_CODES}
 BARTENDER_INGREDIENT_ALIASES = {
     "soju": {"soju", "소주"},
     "beer": {"beer", "맥주"},
 }
+# 중요:
+# 이 기본값은 "UI 초기 fallback"이다.
+# 실제 사용 시에는 저장 파일(config/robot_action_pose_config.json) 값이 우선 로드된다.
+ROBOT_ACTION_POSE_DEFAULTS = {
+    "poses": {
+        "service_ready_posj": [28.0, -35.0, 100.0, 77.0, 63.0, -154.0],
+        "pour_start_cheers_posj": [45.0, 0.0, 135.0, 90.0, -90.0, -135.0],
+        "pour_contact_posj": [45.0, 43.58, 134.19, 90.01, -90.0, -62.23],
+        "pour_horizontal_posj": [42.43, 21.08, 129.85, 87.75, -88.75, -29.06],
+        "pour_diagonal_posj": [41.83, -5.0, 134.35, 87.99, -87.55, -0.61],
+        "pour_vertical_posj": [38.76, -35.8, 146.74, 87.76, -84.18, 22.06],
+        "cup_pick_ready_posj": [28.0, -35.0, 100.0, 77.0, 63.0, -154.0],
+        "cup_pick_approach_posx": [430.0, -110.0, 300.0, 180.0, 0.0, 180.0],
+        "cup_pick_pose_posx": [430.0, -110.0, 225.0, 180.0, 0.0, 180.0],
+        "cup_pick_lift_posx": [430.0, -110.0, 330.0, 180.0, 0.0, 180.0],
+        "cup_delivery_ready_posj": [28.0, -35.0, 100.0, 77.0, 63.0, -154.0],
+        "cup_delivery_approach_posx": [520.0, -20.0, 320.0, 180.0, 0.0, 180.0],
+        "cup_delivery_pose_posx": [520.0, -20.0, 235.0, 180.0, 0.0, 180.0],
+    },
+    "offsets_xyz_mm": {
+        "pick_approach_offset": [0.0, -50.0, 0.0],
+        "pick_grasp_offset": [0.0, 0.0, 0.0],
+        "place_offset": [0.0, 0.0, 0.0],
+        "retreat_offset": [-20.0, -50.0, 0.0],
+    },
+}
+ROBOT_ACTION_POSE_LEGACY_POSE_KEY_MAP = {
+    "joint_pick_ready": "service_ready_posj",
+    "joint_pick_place_ready": "service_ready_posj",
+    "joint_service_ready": "service_ready_posj",
+    "joint_cheers": "pour_start_cheers_posj",
+    "joint_contact": "pour_contact_posj",
+    "joint_pour_horizontal": "pour_horizontal_posj",
+    "joint_pour_diagonal": "pour_diagonal_posj",
+    "joint_pour_vertical": "pour_vertical_posj",
+    "cup_pick_fallback_approach": "cup_pick_approach_posx",
+    "cup_pick_approach": "cup_pick_approach_posx",
+    "cup_pick_fallback_pose": "cup_pick_pose_posx",
+    "cup_pick_pose": "cup_pick_pose_posx",
+    "cup_pick_fallback_lift": "cup_pick_lift_posx",
+    "cup_pick_lift": "cup_pick_lift_posx",
+    "cup_delivery_approach": "cup_delivery_approach_posx",
+    "cup_delivery_pose": "cup_delivery_pose_posx",
+}
+ROBOT_ACTION_POSE_LEGACY_OFFSET_KEY_MAP = {
+    "ingredient_pick_approach": "pick_approach_offset",
+    "ingredient_pick_grasp": "pick_grasp_offset",
+    "ingredient_place": "place_offset",
+    "ingredient_retreat": "retreat_offset",
+}
+
+
+def _canonical_robot_action_pose_key(raw_key):
+    key = str(raw_key or "").strip()
+    if not key:
+        return ""
+    return str(ROBOT_ACTION_POSE_LEGACY_POSE_KEY_MAP.get(key, key))
+
+
+def _canonical_robot_action_offset_key(raw_key):
+    key = str(raw_key or "").strip()
+    if not key:
+        return ""
+    return str(ROBOT_ACTION_POSE_LEGACY_OFFSET_KEY_MAP.get(key, key))
+
+
+ROBOT_ACTION_POSE_ROW_DEFS = [
+    {
+        "section": "[1] PICK/준비",
+        "type": "posj",
+        "config_group": "poses",
+        "config_key": "service_ready_posj",
+        "var_name": "SERVICE_READY_POSJ",
+        "label": "공통 준비자세",
+        "desc": "재료 집기/복귀/컵 전달 전 공통 준비 자세",
+    },
+    {
+        "section": "[1] PICK/준비",
+        "type": "vision_target",
+        "var_name": "resolve_detection_target(ingredient)",
+        "label": "재료 병 비전 타겟 계산",
+        "desc": "vision1 중심좌표/깊이에서 실시간 계산(보기 전용)",
+    },
+    {
+        "section": "[1] PICK",
+        "type": "vision_offset",
+        "config_group": "offsets_xyz_mm",
+        "config_key": "pick_approach_offset",
+        "var_name": "pick_approach_offset",
+        "label": "병 접근(target_1) 오프셋",
+        "desc": "비전 타겟 기준 상대 오프셋(mm)",
+    },
+    {
+        "section": "[1] PICK",
+        "type": "vision_offset",
+        "config_group": "offsets_xyz_mm",
+        "config_key": "pick_grasp_offset",
+        "var_name": "pick_grasp_offset",
+        "label": "병 파지(target_2) 오프셋",
+        "desc": "비전 타겟 기준 상대 오프셋(mm)",
+    },
+    {
+        "section": "[2] POUR",
+        "type": "posj",
+        "config_group": "poses",
+        "config_key": "pour_start_cheers_posj",
+        "var_name": "POUR_START_CHEERS_POSJ",
+        "label": "따르기 시작 자세",
+        "desc": "POUR 시작 전 조인트 자세",
+    },
+    {
+        "section": "[2] POUR",
+        "type": "posj",
+        "config_group": "poses",
+        "config_key": "pour_contact_posj",
+        "var_name": "POUR_CONTACT_POSJ",
+        "label": "따르기 contact",
+        "desc": "실시간 용량 피드백 단계 1",
+    },
+    {
+        "section": "[2] POUR",
+        "type": "posj",
+        "config_group": "poses",
+        "config_key": "pour_horizontal_posj",
+        "var_name": "POUR_HORIZONTAL_POSJ",
+        "label": "따르기 horizontal",
+        "desc": "실시간 용량 피드백 단계 2",
+    },
+    {
+        "section": "[2] POUR",
+        "type": "posj",
+        "config_group": "poses",
+        "config_key": "pour_diagonal_posj",
+        "var_name": "POUR_DIAGONAL_POSJ",
+        "label": "따르기 diagonal",
+        "desc": "실시간 용량 피드백 단계 3",
+    },
+    {
+        "section": "[2] POUR",
+        "type": "posj",
+        "config_group": "poses",
+        "config_key": "pour_vertical_posj",
+        "var_name": "POUR_VERTICAL_POSJ",
+        "label": "따르기 vertical",
+        "desc": "실시간 용량 피드백 단계 4",
+    },
+    {
+        "section": "[3] RETURN",
+        "type": "vision_offset",
+        "config_group": "offsets_xyz_mm",
+        "config_key": "place_offset",
+        "var_name": "place_offset",
+        "label": "병 원위치 안착(target_2) 오프셋",
+        "desc": "비전 타겟 기준 상대 오프셋(mm)",
+    },
+    {
+        "section": "[3] RETURN",
+        "type": "vision_offset",
+        "config_group": "offsets_xyz_mm",
+        "config_key": "retreat_offset",
+        "var_name": "retreat_offset",
+        "label": "병 원위치 이탈(target_1) 오프셋",
+        "desc": "비전 타겟 기준 상대 오프셋(mm)",
+    },
+    {
+        "section": "[4] CUP PICK",
+        "type": "posj",
+        "config_group": "poses",
+        "config_key": "cup_pick_ready_posj",
+        "var_name": "CUP_PICK_READY_POSJ",
+        "label": "컵 집기 준비자세",
+        "desc": "컵 집기 전 준비 posj",
+    },
+    {
+        "section": "[4] CUP PICK",
+        "type": "posx",
+        "config_group": "poses",
+        "config_key": "cup_pick_approach_posx",
+        "var_name": "CUP_PICK_APPROACH_POSX",
+        "label": "컵 집기 접근(고정)",
+        "desc": "컵 집기 고정 posx",
+    },
+    {
+        "section": "[4] CUP PICK",
+        "type": "posx",
+        "config_group": "poses",
+        "config_key": "cup_pick_pose_posx",
+        "var_name": "CUP_PICK_POSE_POSX",
+        "label": "컵 집기 위치(고정)",
+        "desc": "컵 집기 고정 posx",
+    },
+    {
+        "section": "[4] CUP PICK",
+        "type": "posx",
+        "config_group": "poses",
+        "config_key": "cup_pick_lift_posx",
+        "var_name": "CUP_PICK_LIFT_POSX",
+        "label": "컵 리프트(고정)",
+        "desc": "컵 집기 후 고정 리프트 posx",
+    },
+    {
+        "section": "[5] DELIVERY",
+        "type": "posj",
+        "config_group": "poses",
+        "config_key": "cup_delivery_ready_posj",
+        "var_name": "CUP_DELIVERY_READY_POSJ",
+        "label": "전달 준비자세",
+        "desc": "컵 전달 전 준비 posj",
+    },
+    {
+        "section": "[5] DELIVERY",
+        "type": "posx",
+        "config_group": "poses",
+        "config_key": "cup_delivery_approach_posx",
+        "var_name": "CUP_DELIVERY_APPROACH_POSX",
+        "label": "전달 위치 접근",
+        "desc": "완성컵 전달 전 접근 posx",
+    },
+    {
+        "section": "[5] DELIVERY",
+        "type": "posx",
+        "config_group": "poses",
+        "config_key": "cup_delivery_pose_posx",
+        "var_name": "CUP_DELIVERY_POSE_POSX",
+        "label": "전달 위치 안착",
+        "desc": "완성컵 전달 안착 posx",
+    },
+]
 CALIB_DIR = os.path.join(PARAM_DIR, "calibration")
 CALIB_ROBOT_DIR = CALIB_DIR
 CALIB_ROTMAT_DIR = CALIB_DIR
@@ -273,13 +517,39 @@ CALIB_DEFAULT_PATTERN_ROWS = 9
 CALIB_DETECTION_HOLD_SEC = float(os.environ.get("CALIB_DETECTION_HOLD_SEC", "1.2"))
 CALIB_DETECT_INTERVAL_SEC = float(os.environ.get("CALIB_DETECT_INTERVAL_SEC", "0.18"))
 CALIB_PROCESS_HZ = float(os.environ.get("CALIB_PROCESS_HZ", "10.0"))
-VISION_META_PROCESS_HZ = float(os.environ.get("VISION_META_PROCESS_HZ", "8.0"))
+VISION_META_PROCESS_HZ = float(os.environ.get("VISION_META_PROCESS_HZ", "30.0"))
 VISION_META_STALE_SEC = float(os.environ.get("VISION_META_STALE_SEC", "2.0"))
 VISION_META_HOLD_SEC = float(os.environ.get("VISION_META_HOLD_SEC", "1.5"))
 VISION_RUNTIME_UI_HOLD_SEC = float(os.environ.get("VISION_RUNTIME_UI_HOLD_SEC", "3.0"))
+VISION_OVERLAY_REFRESH_MIN_INTERVAL_SEC = max(
+    0.02, float(os.environ.get("VISION_OVERLAY_REFRESH_MIN_INTERVAL_SEC", "0.10"))
+)
+VISION_OVERLAY_REFRESH_FORCE_STALE_SEC = max(
+    0.10, float(os.environ.get("VISION_OVERLAY_REFRESH_FORCE_STALE_SEC", "0.35"))
+)
 # 카메라 프레임 수신 지연(stale) 판정 기준(비전 전용)
 VISION_CAMERA_STALE_SEC = max(0.5, float(os.environ.get("VISION_CAMERA_STALE_SEC", "5.0")))
-VISION_RENDER_INTERVAL_MS = max(15, int(float(os.environ.get("VISION_RENDER_INTERVAL_MS", "33"))))
+VISION_RENDER_STALL_WARN_MS = max(100.0, float(os.environ.get("VISION_RENDER_STALL_WARN_MS", "250.0")))
+VISION_RENDER_STALL_LOG_COOLDOWN_SEC = max(
+    0.5, float(os.environ.get("VISION_RENDER_STALL_LOG_COOLDOWN_SEC", "1.0"))
+)
+VISION_RENDER_TRACE_ENABLED = os.environ.get("VISION_RENDER_TRACE", "0") == "1"
+VISION_RENDER_TRACE_MIN_INTERVAL_SEC = max(
+    0.0, float(os.environ.get("VISION_RENDER_TRACE_MIN_INTERVAL_SEC", "0.05"))
+)
+VISION_RENDER_INTERVAL_MS = max(10, int(float(os.environ.get("VISION_RENDER_INTERVAL_MS", "16"))))
+VISION_UI_CYCLE_LABEL_INTERVAL_MS = max(
+    80, int(float(os.environ.get("VISION_UI_CYCLE_LABEL_INTERVAL_MS", "160")))
+)
+TOP_STATUS_ANIM_INTERVAL_MS = max(
+    50, int(float(os.environ.get("TOP_STATUS_ANIM_INTERVAL_MS", "90")))
+)
+BARTENDER_MODE_UI_REFRESH_MIN_INTERVAL_SEC = max(
+    0.10, float(os.environ.get("BARTENDER_MODE_UI_REFRESH_MIN_INTERVAL_SEC", "0.25"))
+)
+VISION_RECOVERY_TIMER_INTERVAL_MS = max(
+    80, int(float(os.environ.get("VISION_RECOVERY_TIMER_INTERVAL_MS", "120")))
+)
 DEFAULT_VISION1_SERIAL = os.environ.get("DEFAULT_VISION1_SERIAL", "313522301601")
 DEFAULT_VISION2_SERIAL = os.environ.get("DEFAULT_VISION2_SERIAL", "311322302867")
 ROBOT_MODE_HINT = (str(os.environ.get("BARTENDER_ROBOT_MODE_HINT", "real") or "").strip().lower() or "real")
@@ -520,6 +790,18 @@ class App(QMainWindow, form):
         self._status_row_ready = False
         self._closing = False
         self._ui_tick_error_last_at = {}
+        self._ui_tick_slow_last_at = {}
+        self._vision_render_stall_last_log_at_1 = 0.0
+        self._vision_render_stall_last_log_at_2 = 0.0
+        self._vision_render_trace_last_log_at_1 = 0.0
+        self._vision_render_trace_last_log_at_2 = 0.0
+        self._ui_perf_log_path = str(FRONTEND_UI_PERF_LOG_PATH or "").strip()
+        self._ui_perf_log_lock = threading.Lock()
+        if self._ui_perf_log_path:
+            try:
+                os.makedirs(os.path.dirname(self._ui_perf_log_path), exist_ok=True)
+            except Exception:
+                self._ui_perf_log_path = ""
 
         self.backend = backend
         self._auto_start_backend = bool(auto_start_backend)
@@ -597,6 +879,14 @@ class App(QMainWindow, form):
         self._voice_order_webui_button = None
         self._voice_order_html_badge = None
         self._webui_order_start_enabled_cached = None
+        self._webui_order_start_enabled_pending = None
+        self._webui_order_start_sync_lock = threading.Lock()
+        self._webui_order_start_sync_cv = threading.Condition(self._webui_order_start_sync_lock)
+        self._webui_order_start_sync_thread = None
+        self._webui_order_start_sync_stop = threading.Event()
+        self._webui_order_start_sync_last_try_at = 0.0
+        self._webui_order_start_sync_error_last = ""
+        self._webui_order_start_sync_error_at = 0.0
         self._voice_order_cycle_ms = None
         self._voice_prev_update_at = None
         self._voice_backend_last_seen_at = None
@@ -633,6 +923,7 @@ class App(QMainWindow, form):
         self._bartender_auto_mode_button = None
         self._bartender_settings_box = None
         self._bartender_offset_button = None
+        self._bartender_pose_button = None
         self._bartender_speed_title_label = None
         self._bartender_speed_slider = None
         self._bartender_speed_value_label = None
@@ -658,6 +949,7 @@ class App(QMainWindow, form):
         self._menu_xyz_offsets_by_code = {}
         self._menu_gripper_close_mm_by_code = {}
         self._menu_label_by_code = dict(BARTENDER_MENU_LABELS)
+        self._robot_action_pose_config = {}
         self._motion_speed_percent = int(DEFAULT_MOTION_SPEED_PERCENT)
         self._motion_speed_slider = None
         self._motion_speed_title_label = None
@@ -786,13 +1078,18 @@ class App(QMainWindow, form):
             lambda: self._safe_ui_tick("vision_status_2", self._refresh_vision_status_panel, 2)
         )
         self._vision_status_timer_2.start(300)
+        self._vision_recovery_timer = QTimer(self)
+        self._vision_recovery_timer.timeout.connect(
+            lambda: self._safe_ui_tick("vision_recovery", self._process_vision_recovery_queue)
+        )
+        self._vision_recovery_timer.start(VISION_RECOVERY_TIMER_INTERVAL_MS)
         self._status_timer = self._robot_status_timer
         self._vision_status_timer = None
         self._top_status_anim_timer = QTimer(self)
         self._top_status_anim_timer.timeout.connect(
             lambda: self._safe_ui_tick("top_status_anim", self._tick_top_status_animation)
         )
-        self._top_status_anim_timer.start(30)
+        self._top_status_anim_timer.start(TOP_STATUS_ANIM_INTERVAL_MS)
         self._calib_status_blink_timer = QTimer(self)
         self._calib_status_blink_timer.timeout.connect(
             lambda: self._safe_ui_tick("calib_blink", self._tick_calibration_status_blink)
@@ -841,6 +1138,7 @@ class App(QMainWindow, form):
         self._vision_meta_topic_in_use_1 = None
         self._vision_meta_topic_in_use_2 = None
         self._vision_rebind_last_try_at = 0.0
+        self._vision_recovery_pending_panels = set()
         self._vision_bridge_fail_last_at = 0.0
         self._vision_bridge_fail_last_msg = ""
         self._external_vision_proc = None
@@ -934,6 +1232,10 @@ class App(QMainWindow, form):
         self._vision_prev_update_at_2 = None
         self._vision_render_prev_at = None
         self._vision_render_prev_at_2 = None
+        self._vision_overlay_refresh_last_at_1 = 0.0
+        self._vision_overlay_refresh_last_at_2 = 0.0
+        self._vision_cycle_label_last_update_at = 0.0
+        self._bartender_mode_ui_last_update_at = 0.0
         self._robot_prev_state_seen_at = None
         self._vision_cycle_ms = None
         self._vision_cycle_ms_2 = None
@@ -1236,6 +1538,14 @@ class App(QMainWindow, form):
         offset_btn.clicked.connect(self._open_menu_xyz_offset_dialog)
         self._bartender_offset_button = offset_btn
 
+        pose_btn = QPushButton("로봇 액션 포지션 설정", settings_box)
+        pose_btn.setStyleSheet(
+            "QPushButton { background: #eef2ff; color: #1f2937; border: 1px solid #c7d2fe; border-radius: 4px; font-size: 8.8pt; font-weight: 700; }"
+            "QPushButton:hover { background: #e0e7ff; }"
+        )
+        pose_btn.clicked.connect(self._open_robot_action_pose_dialog)
+        self._bartender_pose_button = pose_btn
+
         speed_title = QLabel("로봇 시퀀스 속도 (0~100%)", settings_box)
         speed_title.setStyleSheet("color: #1f3b63; font-size: 8.5pt; font-weight: 700;")
         speed_title.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
@@ -1311,6 +1621,7 @@ class App(QMainWindow, form):
         self._bartender_active_started_at = 0.0
         self._bartender_manual_step_index = -1
         self._load_menu_xyz_offsets()
+        self._robot_action_pose_config = self._load_robot_action_pose_config()
         self._refresh_menu_xyz_offset_button_text()
         self._sync_motion_speed_widgets()
         self._update_bartender_mode_ui()
@@ -1457,8 +1768,10 @@ class App(QMainWindow, form):
         return offsets
 
     def _menu_codes_for_offset_ui(self):
-        ordered = list(BARTENDER_MENU_LABELS.keys())
+        ordered = [code for code in BARTENDER_MENU_LABELS.keys() if str(code).strip().lower() not in BARTENDER_MENU_OFFSET_EXCLUDED_CODES_NORM]
         for code in sorted(self._menu_xyz_offsets_by_code.keys()):
+            if str(code).strip().lower() in BARTENDER_MENU_OFFSET_EXCLUDED_CODES_NORM:
+                continue
             if code not in ordered:
                 ordered.append(code)
         return ordered
@@ -1492,6 +1805,8 @@ class App(QMainWindow, form):
                     for raw_code, raw_payload in menus.items():
                         code = str(raw_code or "").strip()
                         if not code:
+                            continue
+                        if str(code).strip().lower() in BARTENDER_MENU_OFFSET_EXCLUDED_CODES_NORM:
                             continue
                         if isinstance(raw_payload, dict):
                             label = str(raw_payload.get("label", labels.get(code, code)) or code)
@@ -1699,7 +2014,12 @@ class App(QMainWindow, form):
                 new_offsets[code] = (vals[0], vals[1], vals[2])
                 new_gripper[code] = float(grip_v)
 
+            preserved_labels = {}
+            for code, label in self._menu_label_by_code.items():
+                if str(code).strip().lower() in BARTENDER_MENU_OFFSET_EXCLUDED_CODES_NORM:
+                    preserved_labels[str(code)] = str(label)
             self._menu_label_by_code = dict(new_labels)
+            self._menu_label_by_code.update(preserved_labels)
             self._menu_xyz_offsets_by_code = dict(new_offsets)
             self._menu_gripper_close_mm_by_code = dict(new_gripper)
             ok, msg = self._save_menu_xyz_offsets()
@@ -1713,6 +2033,578 @@ class App(QMainWindow, form):
         reset_btn.clicked.connect(_on_reset)
         buttons.accepted.connect(_on_save)
         buttons.rejected.connect(dialog.reject)
+
+        dialog.exec_()
+
+    def _clone_default_robot_action_pose_config(self):
+        payload = {"poses": {}, "offsets_xyz_mm": {}}
+        poses = ROBOT_ACTION_POSE_DEFAULTS.get("poses", {})
+        offsets = ROBOT_ACTION_POSE_DEFAULTS.get("offsets_xyz_mm", {})
+        if isinstance(poses, dict):
+            for key, values in poses.items():
+                try:
+                    vals = [float(v) for v in list(values)[:6]]
+                except Exception:
+                    vals = [0.0] * 6
+                if len(vals) < 6:
+                    vals = vals + [0.0] * (6 - len(vals))
+                payload["poses"][str(key)] = vals[:6]
+        if isinstance(offsets, dict):
+            for key, values in offsets.items():
+                try:
+                    vals = [float(v) for v in list(values)[:3]]
+                except Exception:
+                    vals = [0.0, 0.0, 0.0]
+                if len(vals) < 3:
+                    vals = vals + [0.0] * (3 - len(vals))
+                payload["offsets_xyz_mm"][str(key)] = vals[:3]
+        return payload
+
+    def _sanitize_robot_action_pose_config(self, raw_config):
+        sanitized = self._clone_default_robot_action_pose_config()
+        if not isinstance(raw_config, dict):
+            return sanitized
+
+        poses_raw = raw_config.get("poses", {})
+        if isinstance(poses_raw, dict):
+            normalized_poses_raw = {}
+            has_legacy_shared_ready = False
+            for raw_key, raw_vals in poses_raw.items():
+                raw_key_txt = str(raw_key or "").strip()
+                if raw_key_txt in ("joint_pick_ready", "joint_pick_place_ready", "joint_service_ready"):
+                    has_legacy_shared_ready = True
+                canonical_key = _canonical_robot_action_pose_key(raw_key)
+                if not canonical_key:
+                    continue
+                if (
+                    canonical_key not in normalized_poses_raw
+                    or str(raw_key).strip() == canonical_key
+                ):
+                    normalized_poses_raw[canonical_key] = raw_vals
+            for key in list(sanitized["poses"].keys()):
+                raw_vals = normalized_poses_raw.get(key)
+                if not isinstance(raw_vals, (list, tuple)) or len(raw_vals) < 6:
+                    continue
+                parsed = []
+                valid = True
+                for idx in range(6):
+                    try:
+                        v = float(raw_vals[idx])
+                    except Exception:
+                        valid = False
+                        break
+                    if not np.isfinite(v):
+                        valid = False
+                        break
+                    parsed.append(float(v))
+                if valid and len(parsed) == 6:
+                    sanitized["poses"][key] = list(parsed)
+            if has_legacy_shared_ready:
+                ready_vals = sanitized["poses"].get("service_ready_posj")
+                if isinstance(ready_vals, list) and len(ready_vals) >= 6:
+                    ready_copy = [float(v) for v in list(ready_vals)[:6]]
+                    for inherit_key in ("cup_pick_ready_posj", "cup_delivery_ready_posj"):
+                        raw_inherit = normalized_poses_raw.get(inherit_key)
+                        if isinstance(raw_inherit, (list, tuple)) and len(raw_inherit) >= 6:
+                            continue
+                        sanitized["poses"][inherit_key] = list(ready_copy)
+
+        offsets_raw = raw_config.get("offsets_xyz_mm", {})
+        if isinstance(offsets_raw, dict):
+            normalized_offsets_raw = {}
+            for raw_key, raw_vals in offsets_raw.items():
+                canonical_key = _canonical_robot_action_offset_key(raw_key)
+                if not canonical_key:
+                    continue
+                if (
+                    canonical_key not in normalized_offsets_raw
+                    or str(raw_key).strip() == canonical_key
+                ):
+                    normalized_offsets_raw[canonical_key] = raw_vals
+            for key in list(sanitized["offsets_xyz_mm"].keys()):
+                raw_vals = normalized_offsets_raw.get(key)
+                if not isinstance(raw_vals, (list, tuple)) or len(raw_vals) < 3:
+                    continue
+                parsed = []
+                valid = True
+                for idx in range(3):
+                    try:
+                        v = float(raw_vals[idx])
+                    except Exception:
+                        valid = False
+                        break
+                    if not np.isfinite(v):
+                        valid = False
+                        break
+                    parsed.append(float(v))
+                if valid and len(parsed) == 3:
+                    sanitized["offsets_xyz_mm"][key] = list(parsed)
+        return sanitized
+
+    def _load_robot_action_pose_config(self):
+        cfg = self._clone_default_robot_action_pose_config()
+        try:
+            if os.path.isfile(ROBOT_ACTION_POSE_CONFIG_PATH):
+                with open(ROBOT_ACTION_POSE_CONFIG_PATH, "r", encoding="utf-8") as fp:
+                    loaded = json.load(fp)
+                cfg = self._sanitize_robot_action_pose_config(loaded)
+        except Exception:
+            cfg = self._clone_default_robot_action_pose_config()
+        return cfg
+
+    def _save_robot_action_pose_config(self, config_payload):
+        payload = self._sanitize_robot_action_pose_config(config_payload)
+        payload["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+        try:
+            os.makedirs(os.path.dirname(ROBOT_ACTION_POSE_CONFIG_PATH), exist_ok=True)
+            with open(ROBOT_ACTION_POSE_CONFIG_PATH, "w", encoding="utf-8") as fp:
+                json.dump(payload, fp, ensure_ascii=False, indent=2)
+            return True, "저장 완료"
+        except Exception as exc:
+            return False, f"저장 실패: {exc}"
+
+    def _get_robot_action_pose_entry(self, config_payload, row_def):
+        group = str(row_def.get("config_group", "") or "").strip()
+        key = str(row_def.get("config_key", "") or "").strip()
+        row_type = str(row_def.get("type", "") or "").strip().lower()
+        if not group or not key:
+            return None
+        data = config_payload.get(group, {})
+        if not isinstance(data, dict):
+            return None
+        values = data.get(key)
+        if row_type in ("posj", "posx"):
+            parsed = self._parse_float_values(values, expected_len=6)
+            return list(parsed) if parsed is not None else None
+        if row_type == "vision_offset":
+            parsed = self._parse_float_values(values, expected_len=3)
+            return list(parsed) if parsed is not None else None
+        return None
+
+    def _set_robot_action_pose_entry(self, config_payload, row_def, values):
+        group = str(row_def.get("config_group", "") or "").strip()
+        key = str(row_def.get("config_key", "") or "").strip()
+        row_type = str(row_def.get("type", "") or "").strip().lower()
+        if not group or not key:
+            return False, "설정 키가 없습니다."
+        if group not in ("poses", "offsets_xyz_mm"):
+            return False, "설정 그룹이 올바르지 않습니다."
+        if not isinstance(config_payload.get(group), dict):
+            config_payload[group] = {}
+        expected_len = 6 if row_type in ("posj", "posx") else 3
+        parsed = self._parse_float_values(values, expected_len=expected_len)
+        if parsed is None:
+            return False, f"{key} 값 길이가 올바르지 않습니다."
+        for v in parsed:
+            if not np.isfinite(float(v)):
+                return False, f"{key} 값이 유효하지 않습니다."
+        config_payload[group][key] = [float(v) for v in list(parsed)[:expected_len]]
+        return True, "ok"
+
+    def _format_robot_action_pose_row_value(self, row_def, config_payload):
+        row_type = str(row_def.get("type", "") or "").strip().lower()
+        values = self._get_robot_action_pose_entry(config_payload, row_def)
+        if row_type == "posj":
+            return self._format_joint_summary(values)
+        if row_type == "posx":
+            return self._format_pose6_summary(values)
+        if row_type == "vision_offset":
+            return self._format_xyz_summary(values)
+        if row_type == "vision_target":
+            return "실시간 계산값(보기 전용)"
+        return "-"
+
+    def _open_robot_action_pose_dialog(self):
+        dialog = QDialog(self)
+        dialog.setWindowTitle("로봇 액션 포지션 설정")
+        dialog.setModal(True)
+        dialog.setWindowFlags(Qt.Window | Qt.WindowTitleHint | Qt.WindowSystemMenuHint | Qt.WindowCloseButtonHint)
+        dialog.resize(1280, 720)
+
+        root = QVBoxLayout(dialog)
+        root.setContentsMargins(14, 12, 14, 12)
+        root.setSpacing(8)
+
+        intro = QLabel(
+            (
+                "robot_action_planner 시퀀스에서 사용하는 포지션/상대오프셋 관리 화면입니다.\n"
+                "현재값 칸을 클릭하면 값을 수정할 수 있으며, 수정/티칭해도 즉시 저장되지 않습니다.\n"
+                "[저장] 버튼을 눌러야 파일에 반영됩니다.\n"
+                "새로고침은 저장된 값만 다시 불러옵니다."
+            ),
+            dialog,
+        )
+        intro.setWordWrap(True)
+        root.addWidget(intro)
+
+        status_label = QLabel("대기: 필요한 행을 수정한 뒤 저장하세요.", dialog)
+        status_label.setStyleSheet("font-weight: 700; color: #1f2937;")
+        status_label.setWordWrap(True)
+        root.addWidget(status_label)
+
+        table = QTableWidget(len(ROBOT_ACTION_POSE_ROW_DEFS), 8, dialog)
+        table.setEditTriggers(QTableWidget.NoEditTriggers)
+        table.setSelectionMode(QTableWidget.NoSelection)
+        table.verticalHeader().setVisible(False)
+        table.verticalHeader().setDefaultSectionSize(max(24, int(UI_PANEL_TABLE_ROW_HEIGHT)))
+        table.setHorizontalHeaderLabels(["순서", "구역", "변수명", "타입", "현재값", "작업", "설명", "상태"])
+        header = table.horizontalHeader()
+        if header is not None:
+            header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
+            header.setSectionResizeMode(1, QHeaderView.ResizeToContents)
+            header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
+            header.setSectionResizeMode(3, QHeaderView.ResizeToContents)
+            header.setSectionResizeMode(4, QHeaderView.Stretch)
+            header.setSectionResizeMode(5, QHeaderView.ResizeToContents)
+            header.setSectionResizeMode(6, QHeaderView.Stretch)
+            header.setSectionResizeMode(7, QHeaderView.ResizeToContents)
+        root.addWidget(table, 1)
+
+        action_row = QHBoxLayout()
+        action_row.setSpacing(8)
+        refresh_btn = QPushButton("새로고침", dialog)
+        save_btn = QPushButton("저장", dialog)
+        close_btn = QPushButton("닫기", dialog)
+        action_row.addStretch(1)
+        action_row.addWidget(refresh_btn)
+        action_row.addWidget(save_btn)
+        action_row.addWidget(close_btn)
+        root.addLayout(action_row)
+
+        loaded_saved_cfg = self._load_robot_action_pose_config()
+        saved_cfg = self._sanitize_robot_action_pose_config(loaded_saved_cfg)
+        draft_cfg = self._sanitize_robot_action_pose_config(saved_cfg)
+        self._robot_action_pose_config = self._sanitize_robot_action_pose_config(saved_cfg)
+
+        row_states = []
+        save_state = {"saving": False, "done": False, "ok": False, "msg": "", "thread": None}
+        runtime_caps = {
+            "can_move_posj": False,
+            "can_move_posx": False,
+            "can_teach_pose": False,
+        }
+
+        def _set_status(text: str):
+            status_label.setText(str(text))
+
+        def _is_row_editable(row_state):
+            row_type = str(row_state["def"].get("type", "") or "").strip().lower()
+            return row_type in ("posj", "posx", "vision_offset")
+
+        def _refresh_runtime_caps():
+            backend = self.backend
+            backend_ready = False
+            if backend is not None:
+                try:
+                    backend_ready = bool(backend.is_ready()) if hasattr(backend, "is_ready") else True
+                except Exception:
+                    backend_ready = False
+
+            can_move_posj = bool(backend_ready and hasattr(backend, "send_move_joint"))
+            can_move_posx = bool(backend_ready and hasattr(backend, "send_move_cartesian"))
+            mode_ok_for_move = True
+            mode_value = None
+            mode_seen_at = None
+            if backend is not None and hasattr(backend, "get_robot_mode_snapshot"):
+                try:
+                    mode_value, mode_seen_at = backend.get_robot_mode_snapshot()
+                except Exception:
+                    mode_value, mode_seen_at = None, None
+            if mode_value is None or mode_seen_at is None:
+                mode_ok_for_move = False
+            else:
+                try:
+                    mode_ok_for_move = int(mode_value) == 1
+                except Exception:
+                    mode_ok_for_move = False
+            can_move_posj = bool(can_move_posj and mode_ok_for_move)
+            can_move_posx = bool(can_move_posx and mode_ok_for_move)
+            can_teach_pose = bool(
+                backend_ready
+                and mode_ok_for_move
+                and backend is not None
+                and (hasattr(backend, "get_position_snapshot") or hasattr(backend, "get_current_posx_live"))
+            )
+            runtime_caps["can_move_posj"] = can_move_posj
+            runtime_caps["can_move_posx"] = can_move_posx
+            runtime_caps["can_teach_pose"] = can_teach_pose
+
+        def _is_row_teachable(row_state):
+            row_type = str(row_state["def"].get("type", "") or "").strip().lower()
+            return row_type in ("posj", "posx") and bool(runtime_caps.get("can_teach_pose"))
+
+        def _is_row_movable(row_state):
+            row_type = str(row_state["def"].get("type", "") or "").strip().lower()
+            if row_type == "posj":
+                return bool(runtime_caps.get("can_move_posj"))
+            if row_type == "posx":
+                return bool(runtime_caps.get("can_move_posx"))
+            return False
+
+        def _refresh_row(row_state, status_text: str | None = None):
+            value_item = row_state.get("value_item")
+            state_item = row_state.get("state_item")
+            if value_item is not None:
+                value_item.setText(self._format_robot_action_pose_row_value(row_state["def"], draft_cfg))
+            if state_item is not None:
+                if status_text is not None:
+                    state_item.setText(str(status_text))
+                elif str(row_state["def"].get("type", "") or "").strip().lower() == "vision_target":
+                    state_item.setText("참조전용")
+                else:
+                    state_item.setText("저장됨")
+            move_btn = row_state.get("move_btn")
+            teach_btn = row_state.get("teach_btn")
+            if move_btn is not None:
+                move_btn.setEnabled((not save_state["saving"]) and _is_row_movable(row_state))
+            if teach_btn is not None:
+                teach_btn.setEnabled((not save_state["saving"]) and _is_row_teachable(row_state))
+
+        def _refresh_all_rows(status_text: str | None = None):
+            _refresh_runtime_caps()
+            for row_state in row_states:
+                _refresh_row(row_state, status_text=status_text if _is_row_editable(row_state) else None)
+
+        def _edit_row(row_state):
+            if save_state["saving"]:
+                return
+            row_def = row_state["def"]
+            row_type = str(row_def.get("type", "") or "").strip().lower()
+            row_label = str(row_def.get("label", row_def.get("var_name", "-")))
+            values = self._get_robot_action_pose_entry(draft_cfg, row_def)
+            if row_type == "posj":
+                defaults = values if values is not None else [0.0] * 6
+                edited = self._ask_six_values_form(
+                    f"{row_label} 수정",
+                    ["J1", "J2", "J3", "J4", "J5", "J6"],
+                    defaults,
+                    limits=JOINT_INPUT_LIMITS_DEG,
+                    guide_text="안내: robot_action_planner의 조인트(posj) 변수 값을 수정합니다.",
+                )
+            elif row_type == "posx":
+                defaults = values if values is not None else [0.0] * 6
+                edited = self._ask_six_values_form(
+                    f"{row_label} 수정",
+                    ["X", "Y", "Z", "A", "B", "C"],
+                    defaults,
+                    guide_text="안내: robot_action_planner의 카테시안(posx) 변수 값을 수정합니다.",
+                )
+            elif row_type == "vision_offset":
+                defaults = values if values is not None else [0.0, 0.0, 0.0]
+                edited = self._ask_three_values_form(
+                    f"{row_label} 수정",
+                    ["X", "Y", "Z"],
+                    defaults,
+                    guide_text="안내: 비전 기준 상대 오프셋(mm)입니다. 티칭은 지원하지 않습니다.",
+                )
+            else:
+                return
+
+            if edited is None:
+                return
+            if isinstance(edited, str):
+                QMessageBox.warning(dialog, "포지션 설정", edited, QMessageBox.Ok)
+                return
+            ok_set, msg_set = self._set_robot_action_pose_entry(draft_cfg, row_def, edited)
+            if not ok_set:
+                QMessageBox.warning(dialog, "포지션 설정", msg_set, QMessageBox.Ok)
+                return
+            _refresh_row(row_state, status_text="수정됨(미저장)")
+            _set_status(f"{row_label}: 값 수정 완료 (저장 필요)")
+
+        def _teach_row(row_state):
+            if save_state["saving"]:
+                return
+            row_def = row_state["def"]
+            row_type = str(row_def.get("type", "") or "").strip().lower()
+            if row_type not in ("posj", "posx"):
+                return
+            posj, posx, err = self._capture_current_teach_pose()
+            if err is not None:
+                QMessageBox.warning(dialog, "포지션 티칭", err, QMessageBox.Ok)
+                return
+            values = posj if row_type == "posj" else posx
+            ok_set, msg_set = self._set_robot_action_pose_entry(draft_cfg, row_def, values)
+            if not ok_set:
+                QMessageBox.warning(dialog, "포지션 티칭", msg_set, QMessageBox.Ok)
+                return
+            row_label = str(row_def.get("label", row_def.get("var_name", "-")))
+            _refresh_row(row_state, status_text="티칭됨(미저장)")
+            _set_status(f"{row_label}: 현재 위치 티칭 반영 (저장 필요)")
+
+        def _move_row(row_state):
+            if save_state["saving"]:
+                return
+            row_def = row_state["def"]
+            row_type = str(row_def.get("type", "") or "").strip().lower()
+            row_label = str(row_def.get("label", row_def.get("var_name", "-")))
+            values = self._get_robot_action_pose_entry(draft_cfg, row_def)
+            if values is None:
+                QMessageBox.warning(dialog, "포지션 이동", f"{row_label} 값이 없습니다.", QMessageBox.Ok)
+                return
+            if self.backend is None:
+                QMessageBox.warning(dialog, "포지션 이동", "백엔드 초기화 중입니다.", QMessageBox.Ok)
+                return
+            if row_type == "posj":
+                if not hasattr(self.backend, "send_move_joint"):
+                    QMessageBox.warning(dialog, "포지션 이동", "백엔드가 조인트 이동을 지원하지 않습니다.", QMessageBox.Ok)
+                    return
+                if not self._confirm_motion_with_values(
+                    "포지션 이동 확인",
+                    "안내: 로봇이 실제로 이동합니다.\n조인트 목표 위치는 아래와 같습니다.",
+                    ["J1", "J2", "J3", "J4", "J5", "J6"],
+                    values,
+                    "액션포지션 이동",
+                ):
+                    return
+                speed = self._motion_speed_for_command()
+                ok_move, msg_move = self.backend.send_move_joint(*values, vel=speed, acc=speed)
+            elif row_type == "posx":
+                if not hasattr(self.backend, "send_move_cartesian"):
+                    QMessageBox.warning(dialog, "포지션 이동", "백엔드가 카테시안 이동을 지원하지 않습니다.", QMessageBox.Ok)
+                    return
+                if not self._confirm_motion_with_values(
+                    "포지션 이동 확인",
+                    "안내: 로봇이 실제로 이동합니다.\n카테시안 목표 위치는 아래와 같습니다.",
+                    ["X", "Y", "Z", "A", "B", "C"],
+                    values,
+                    "액션포지션 이동",
+                ):
+                    return
+                speed = self._motion_speed_for_command()
+                ok_move, msg_move = self.backend.send_move_cartesian(*values, vel=speed, acc=speed)
+            else:
+                return
+            _refresh_row(row_state, status_text=("이동요청 완료" if ok_move else "이동 실패"))
+            _set_status(f"{row_label}: {msg_move}")
+            self.append_log(f"[액션포지션 이동] {row_label}: {msg_move}\n")
+
+        for row_index, row_def in enumerate(ROBOT_ACTION_POSE_ROW_DEFS):
+            value_item = QTableWidgetItem(self._format_robot_action_pose_row_value(row_def, draft_cfg))
+            state_item = QTableWidgetItem("참조전용" if str(row_def.get("type", "")).lower() == "vision_target" else "저장됨")
+            table.setItem(row_index, 0, QTableWidgetItem(str(row_index + 1)))
+            table.setItem(row_index, 1, QTableWidgetItem(str(row_def.get("section", "-"))))
+            table.setItem(row_index, 2, QTableWidgetItem(str(row_def.get("var_name", "-"))))
+            table.setItem(row_index, 3, QTableWidgetItem(str(row_def.get("type", "-"))))
+            table.setItem(row_index, 4, value_item)
+            table.setItem(row_index, 6, QTableWidgetItem(str(row_def.get("desc", ""))))
+            table.setItem(row_index, 7, state_item)
+
+            button_wrap = QFrame(table)
+            button_layout = QHBoxLayout(button_wrap)
+            button_layout.setContentsMargins(4, 0, 4, 0)
+            button_layout.setSpacing(4)
+            move_btn = None
+            teach_btn = None
+            row_type = str(row_def.get("type", "") or "").strip().lower()
+            if row_type in ("posj", "posx"):
+                move_btn = QPushButton("이동", button_wrap)
+                move_btn.setMinimumWidth(52)
+                teach_btn = QPushButton("티칭", button_wrap)
+                teach_btn.setMinimumWidth(56)
+                button_layout.addWidget(move_btn)
+                button_layout.addWidget(teach_btn)
+            elif row_type == "vision_offset":
+                ro_label = QLabel("값클릭 수정", button_wrap)
+                ro_label.setStyleSheet("color: #475569;")
+                button_layout.addWidget(ro_label)
+            else:
+                ro_label = QLabel("보기", button_wrap)
+                ro_label.setStyleSheet("color: #475569;")
+                button_layout.addWidget(ro_label)
+            table.setCellWidget(row_index, 5, button_wrap)
+
+            row_state = {
+                "index": row_index,
+                "def": row_def,
+                "value_item": value_item,
+                "state_item": state_item,
+                "move_btn": move_btn,
+                "teach_btn": teach_btn,
+            }
+            if move_btn is not None:
+                move_btn.clicked.connect(lambda _checked=False, state=row_state: _move_row(state))
+            if teach_btn is not None:
+                teach_btn.clicked.connect(lambda _checked=False, state=row_state: _teach_row(state))
+            row_states.append(row_state)
+
+        def _on_table_cell_clicked(row_index, column_index):
+            if int(column_index) != 4:
+                return
+            if row_index < 0 or row_index >= len(row_states):
+                return
+            _edit_row(row_states[row_index])
+
+        table.cellClicked.connect(_on_table_cell_clicked)
+        _refresh_all_rows()
+
+        def _reload_saved_values():
+            nonlocal saved_cfg, draft_cfg
+            if save_state["saving"]:
+                return
+            loaded = self._load_robot_action_pose_config()
+            saved_cfg = self._sanitize_robot_action_pose_config(loaded)
+            draft_cfg = self._sanitize_robot_action_pose_config(saved_cfg)
+            self._robot_action_pose_config = self._sanitize_robot_action_pose_config(saved_cfg)
+            _refresh_all_rows(status_text="저장값 로드")
+            _set_status("저장된 포지션 값을 다시 불러왔습니다.")
+
+        def _finish_save():
+            nonlocal saved_cfg, draft_cfg
+            save_state["saving"] = False
+            table.setEnabled(True)
+            refresh_btn.setEnabled(True)
+            save_btn.setEnabled(True)
+            close_btn.setEnabled(True)
+            if bool(save_state["ok"]):
+                saved_cfg = self._sanitize_robot_action_pose_config(draft_cfg)
+                draft_cfg = self._sanitize_robot_action_pose_config(saved_cfg)
+                self._robot_action_pose_config = self._sanitize_robot_action_pose_config(saved_cfg)
+                _refresh_all_rows(status_text="저장됨")
+                _set_status(f"저장 완료: {ROBOT_ACTION_POSE_CONFIG_PATH}")
+                self._append_voice_order_log(f"로봇 액션 포지션 설정 저장: {ROBOT_ACTION_POSE_CONFIG_PATH}")
+            else:
+                _set_status(str(save_state["msg"] or "저장 실패"))
+                QMessageBox.warning(dialog, "포지션 설정", str(save_state["msg"] or "저장 실패"), QMessageBox.Ok)
+
+        def _poll_save_done():
+            if not bool(save_state["done"]):
+                QTimer.singleShot(80, _poll_save_done)
+                return
+            _finish_save()
+
+        def _save_worker(payload):
+            ok_save, msg_save = self._save_robot_action_pose_config(payload)
+            save_state["ok"] = bool(ok_save)
+            save_state["msg"] = str(msg_save)
+            save_state["done"] = True
+
+        def _save_values_async():
+            if save_state["saving"]:
+                return
+            payload = self._sanitize_robot_action_pose_config(draft_cfg)
+            save_state["saving"] = True
+            save_state["done"] = False
+            save_state["ok"] = False
+            save_state["msg"] = ""
+            table.setEnabled(False)
+            refresh_btn.setEnabled(False)
+            save_btn.setEnabled(False)
+            close_btn.setEnabled(False)
+            _set_status("저장 중...")
+            th = threading.Thread(
+                target=_save_worker,
+                args=(payload,),
+                daemon=True,
+                name="robot-action-pose-save",
+            )
+            save_state["thread"] = th
+            th.start()
+            QTimer.singleShot(80, _poll_save_done)
+
+        refresh_btn.clicked.connect(_reload_saved_values)
+        save_btn.clicked.connect(_save_values_async)
+        close_btn.clicked.connect(dialog.accept)
 
         dialog.exec_()
 
@@ -2259,15 +3151,18 @@ class App(QMainWindow, form):
 
         y0 += ctrl_h + 8
         settings_box = getattr(self, "_bartender_settings_box", None)
-        settings_h = 74
+        settings_h = 102
         if settings_box is not None:
             settings_box.setGeometry(margin, y0, max(120, w - (margin * 2)), settings_h)
             inner_margin = 8
             inner_w = max(120, settings_box.width() - (inner_margin * 2))
-            offset_h = 24
+            offset_h = 22
+            pose_h = 22
             if self._bartender_offset_button is not None:
                 self._bartender_offset_button.setGeometry(inner_margin, inner_margin, inner_w, offset_h)
-            row_y = inner_margin + offset_h + 6
+            if self._bartender_pose_button is not None:
+                self._bartender_pose_button.setGeometry(inner_margin, inner_margin + offset_h + 4, inner_w, pose_h)
+            row_y = inner_margin + offset_h + 4 + pose_h + 6
             if self._bartender_speed_title_label is not None:
                 self._bartender_speed_title_label.setGeometry(inner_margin, row_y, 152, 18)
             slider_x = inner_margin + 156
@@ -3083,29 +3978,91 @@ class App(QMainWindow, form):
         port = str(VOICE_ORDER_WEBUI_PORT or "").strip() or "8000"
         return f"http://{host}:{port}"
 
+    def _ensure_webui_order_start_sync_worker(self):
+        if getattr(self, "_closing", False):
+            return
+        with self._webui_order_start_sync_cv:
+            thread = self._webui_order_start_sync_thread
+            if thread is not None and thread.is_alive():
+                return
+            self._webui_order_start_sync_stop.clear()
+            self._webui_order_start_sync_thread = threading.Thread(
+                target=self._webui_order_start_sync_loop,
+                name="webui-order-start-sync",
+                daemon=True,
+            )
+            self._webui_order_start_sync_thread.start()
+
+    def _stop_webui_order_start_sync_worker(self):
+        self._webui_order_start_sync_stop.set()
+        with self._webui_order_start_sync_cv:
+            self._webui_order_start_sync_cv.notify_all()
+        thread = getattr(self, "_webui_order_start_sync_thread", None)
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=0.8)
+        self._webui_order_start_sync_thread = None
+
+    def _webui_order_start_sync_loop(self):
+        while not self._webui_order_start_sync_stop.is_set():
+            with self._webui_order_start_sync_cv:
+                while (
+                    (not self._webui_order_start_sync_stop.is_set())
+                    and (self._webui_order_start_enabled_pending is None)
+                ):
+                    self._webui_order_start_sync_cv.wait(timeout=0.5)
+                if self._webui_order_start_sync_stop.is_set():
+                    return
+                target = bool(self._webui_order_start_enabled_pending)
+                self._webui_order_start_enabled_pending = None
+
+            now = time.monotonic()
+            wait_sec = float(WEBUI_ORDER_START_SYNC_MIN_INTERVAL_SEC) - (
+                now - float(self._webui_order_start_sync_last_try_at)
+            )
+            if wait_sec > 0.0:
+                if self._webui_order_start_sync_stop.wait(wait_sec):
+                    return
+                with self._webui_order_start_sync_cv:
+                    if self._webui_order_start_enabled_pending is not None:
+                        target = bool(self._webui_order_start_enabled_pending)
+                        self._webui_order_start_enabled_pending = None
+
+            self._webui_order_start_sync_last_try_at = time.monotonic()
+            url = f"{self._voice_order_webui_url()}/api/control/order_start_enabled"
+            payload = json.dumps({"enabled": bool(target)}, ensure_ascii=False).encode("utf-8")
+            req = urllib_request.Request(
+                url=url,
+                data=payload,
+                method="POST",
+                headers={"Content-Type": "application/json; charset=utf-8"},
+            )
+            try:
+                with urllib_request.urlopen(req, timeout=float(WEBUI_ORDER_START_HTTP_TIMEOUT_SEC)) as resp:
+                    if int(getattr(resp, "status", 200)) >= 400:
+                        raise RuntimeError(f"http_{getattr(resp, 'status', '-')}")
+                with self._webui_order_start_sync_cv:
+                    self._webui_order_start_enabled_cached = bool(target)
+                    self._webui_order_start_sync_error_last = ""
+                    self._webui_order_start_sync_error_at = 0.0
+            except urllib_error.URLError:
+                continue
+            except Exception as exc:
+                with self._webui_order_start_sync_cv:
+                    self._webui_order_start_sync_error_last = str(exc)
+                    self._webui_order_start_sync_error_at = time.monotonic()
+
     def _set_webui_order_start_enabled(self, enabled: bool, force: bool = False):
         target = bool(enabled)
-        cached = getattr(self, "_webui_order_start_enabled_cached", None)
-        if (not force) and (cached is not None) and (bool(cached) == target):
-            return
-        url = f"{self._voice_order_webui_url()}/api/control/order_start_enabled"
-        payload = json.dumps({"enabled": target}, ensure_ascii=False).encode("utf-8")
-        req = urllib_request.Request(
-            url=url,
-            data=payload,
-            method="POST",
-            headers={"Content-Type": "application/json; charset=utf-8"},
-        )
-        try:
-            with urllib_request.urlopen(req, timeout=0.8) as resp:
-                if int(getattr(resp, "status", 200)) >= 400:
-                    raise RuntimeError(f"http_{getattr(resp, 'status', '-')}")
-            self._webui_order_start_enabled_cached = target
-        except urllib_error.URLError:
-            # Web UI 미실행 상태에서는 로그 스팸을 피하기 위해 무시.
-            return
-        except Exception as exc:
-            self._append_voice_order_log(f"WEB UI 주문시작 잠금 동기화 실패: {exc}", level="warning")
+        with self._webui_order_start_sync_cv:
+            cached = getattr(self, "_webui_order_start_enabled_cached", None)
+            pending = getattr(self, "_webui_order_start_enabled_pending", None)
+            if (not force) and (cached is not None) and (bool(cached) == target) and (pending is None):
+                return
+            if force:
+                self._webui_order_start_enabled_cached = None
+            self._webui_order_start_enabled_pending = target
+            self._webui_order_start_sync_cv.notify_all()
+        self._ensure_webui_order_start_sync_worker()
 
     def _notify_bartender_tts_done(self):
         run_id = int(getattr(self, "_voice_sequence_run_id", 0) or 0)
@@ -4203,15 +5160,54 @@ class App(QMainWindow, form):
         self._ui_tick_error_last_at[key] = now
         self.append_log(f"[UI] {key} 처리 중 예외: {err}\n")
 
+    def _log_ui_tick_slow(self, tick_name: str, elapsed_ms: float):
+        key = str(tick_name or "ui_tick")
+        if key == "log_flush":
+            return
+        now = time.monotonic()
+        last_at = float(self._ui_tick_slow_last_at.get(key, 0.0))
+        if (now - last_at) < float(UI_TICK_WARN_COOLDOWN_SEC):
+            return
+        self._ui_tick_slow_last_at[key] = now
+        self.append_log(
+            f"[UI-PERF] slow tick: {key} {float(elapsed_ms):.1f}ms "
+            f"(warn>={float(UI_TICK_WARN_MS):.1f}ms)\n"
+        )
+        self._append_ui_perf_log_file(
+            f"slow tick: {key} {float(elapsed_ms):.1f}ms (warn>={float(UI_TICK_WARN_MS):.1f}ms)"
+        )
+
+    def _append_ui_perf_log_file(self, message: str):
+        path = str(getattr(self, "_ui_perf_log_path", "") or "").strip()
+        if not path:
+            return
+        text = str(message or "").strip()
+        if not text:
+            return
+        line = f"[{time.strftime('%H:%M:%S')}] {text}\n"
+        try:
+            with self._ui_perf_log_lock:
+                with open(path, "a", encoding="utf-8") as fp:
+                    fp.write(line)
+        except Exception:
+            return
+
     def _safe_ui_tick(self, tick_name: str, fn, *args, **kwargs):
         if getattr(self, "_closing", False):
             return
+        started_at = time.monotonic()
         try:
             fn(*args, **kwargs)
         except Exception as e:
             if getattr(self, "_closing", False) or self._is_shutdown_exception(e):
                 return
             self._log_ui_tick_exception(str(tick_name), e)
+        finally:
+            elapsed_ms = (time.monotonic() - started_at) * 1000.0
+            if UI_TICK_TRACE_ENABLED and float(elapsed_ms) >= float(UI_TICK_TRACE_MIN_MS):
+                self._append_ui_perf_log_file(f"tick_trace: {str(tick_name)} {float(elapsed_ms):.2f}ms")
+            if float(elapsed_ms) >= float(UI_TICK_WARN_MS):
+                self._log_ui_tick_slow(str(tick_name), float(elapsed_ms))
 
     def _setup_top_status_row(self):
         self._top_status_panel = getattr(self, "top_status_panel", None)
@@ -4754,21 +5750,40 @@ class App(QMainWindow, form):
 
     def _request_vision_overlay_refresh(self, panel_index: int):
         panel = 2 if int(panel_index) == 2 else 1
+        now = time.monotonic()
         if panel == 2:
             if not bool(self._top_status_enabled.get("vision2", True)):
                 return
+            last_refresh_at = float(getattr(self, "_vision_overlay_refresh_last_at_2", 0.0) or 0.0)
+            last_camera_at = getattr(self, "_last_camera_frame_at_2", None)
+            if (
+                (now - last_refresh_at) < float(VISION_OVERLAY_REFRESH_MIN_INTERVAL_SEC)
+                and (last_camera_at is not None)
+                and ((now - float(last_camera_at)) <= float(VISION_OVERLAY_REFRESH_FORCE_STALE_SEC))
+            ):
+                return
+            self._vision_overlay_refresh_last_at_2 = now
             token = int(getattr(self, "_vision_stream_token_2", 0))
             with self._vision_raw_frame_lock_2:
                 raw_bgr = None if self._last_raw_bgr_2 is None else self._last_raw_bgr_2.copy()
         else:
             if not bool(self._top_status_enabled.get("vision", True)):
                 return
+            last_refresh_at = float(getattr(self, "_vision_overlay_refresh_last_at_1", 0.0) or 0.0)
+            last_camera_at = getattr(self, "_last_camera_frame_at_1", None)
+            if (
+                (now - last_refresh_at) < float(VISION_OVERLAY_REFRESH_MIN_INTERVAL_SEC)
+                and (last_camera_at is not None)
+                and ((now - float(last_camera_at)) <= float(VISION_OVERLAY_REFRESH_FORCE_STALE_SEC))
+            ):
+                return
+            self._vision_overlay_refresh_last_at_1 = now
             token = int(getattr(self, "_vision_stream_token_1", 0))
             with self._vision_raw_frame_lock_1:
                 raw_bgr = None if self._last_raw_bgr_1 is None else self._last_raw_bgr_1.copy()
         if raw_bgr is None:
             return
-        self._queue_vision_frame_for_compose(panel, raw_bgr, now=time.monotonic(), stream_token=token)
+        self._queue_vision_frame_for_compose(panel, raw_bgr, now=now, stream_token=token)
 
     def _compose_vision_frame_qimage(self, panel_index: int, bgr):
         panel = 2 if int(panel_index) == 2 else 1
@@ -4793,6 +5808,7 @@ class App(QMainWindow, form):
         return QImage(rgb.data, w, h, 3 * w, QImage.Format_RGB888).copy()
 
     def _vision_compose_loop(self, panel_index: int):
+        
         panel = 2 if int(panel_index) == 2 else 1
         if panel == 2:
             cond = self._vision_compose_cv_2
@@ -4838,6 +5854,7 @@ class App(QMainWindow, form):
             else:
                 self._vision_compose_ms = compose_ms
                 self._enqueue_vision_frame(qimg, now=frame_at, stream_token=token)
+             
 
     def _clear_vision_view_data(self, panel_index: int):
         panel = 2 if int(panel_index) == 2 else 1
@@ -5162,8 +6179,13 @@ class App(QMainWindow, form):
                 voice_state,
                 str(getattr(self, "_voice_order_status_severity", "info") or "info"),
             )
-        self._update_bartender_mode_ui()
-        self._refresh_bartender_sequence_styles()
+        now = time.monotonic()
+        if (
+            now - float(getattr(self, "_bartender_mode_ui_last_update_at", 0.0))
+        ) >= float(BARTENDER_MODE_UI_REFRESH_MIN_INTERVAL_SEC):
+            self._bartender_mode_ui_last_update_at = now
+            self._update_bartender_mode_ui()
+            self._refresh_bartender_sequence_styles()
 
     def _set_robot_controls_enabled(self, enabled: bool):
         enabled = bool(enabled)
@@ -5549,6 +6571,29 @@ class App(QMainWindow, form):
         self._refresh_vision_status_panel(1)
         self._refresh_vision_status_panel(2)
 
+    def _schedule_vision_recovery(self, panel_index: int):
+        panel = 2 if int(panel_index) == 2 else 1
+        pending = getattr(self, "_vision_recovery_pending_panels", None)
+        if pending is None:
+            self._vision_recovery_pending_panels = {panel}
+            return
+        pending.add(panel)
+
+    def _process_vision_recovery_queue(self):
+        pending = getattr(self, "_vision_recovery_pending_panels", None)
+        if not pending:
+            return
+        panel = 1 if 1 in pending else min(pending)
+        pending.discard(panel)
+        calib_on_any = bool(
+            getattr(self, "_calibration_mode_enabled_1", False)
+            or getattr(self, "_calibration_mode_enabled_2", False)
+        )
+        if (not calib_on_any) and YOLO_EXTERNAL_NODE and YOLO_AUTO_LAUNCH_NODE:
+            self._ensure_external_vision_process_panel(panel)
+        self._sync_calibration_process_panel(panel)
+        self._rebind_external_vision_bridge_panel_for_mode(panel)
+
     def _refresh_vision_status_panel(self, panel_index: int):
         panel = 2 if int(panel_index) == 2 else 1
         key = "vision2" if panel == 2 else "vision"
@@ -5590,10 +6635,7 @@ class App(QMainWindow, form):
         if stale_vision and ((now - self._vision_rebind_last_try_at) > 8.0):
             retry_needed = True
             self._vision_rebind_last_try_at = now
-            if (not calib_on_any) and YOLO_EXTERNAL_NODE and YOLO_AUTO_LAUNCH_NODE:
-                self._ensure_external_vision_process_panel(panel)
-            self._sync_calibration_process_panel(panel)
-            self._rebind_external_vision_bridge_panel_for_mode(panel)
+            self._schedule_vision_recovery(panel)
 
         if retry_needed:
             if not bool(getattr(self, "_vision_retry_notice_logged", {}).get(panel, False)):
@@ -6285,6 +7327,15 @@ class App(QMainWindow, form):
             w = parent.width() if parent is not None else 531
             self._robot_cycle_label.setGeometry(max(240, w - 190), 8, 178, 14)
 
+    def _maybe_update_cycle_time_labels_from_vision(self):
+        now = time.monotonic()
+        last_at = float(getattr(self, "_vision_cycle_label_last_update_at", 0.0) or 0.0)
+        min_dt = max(0.08, float(VISION_UI_CYCLE_LABEL_INTERVAL_MS) / 1000.0)
+        if (now - last_at) < min_dt:
+            return
+        self._vision_cycle_label_last_update_at = now
+        self._update_cycle_time_labels()
+
     def _update_cycle_time_labels(self):
         if hasattr(self, "_vision_cycle_label") and self._vision_cycle_label is not None:
             if self._vision_cycle_ms is None:
@@ -6314,6 +7365,7 @@ class App(QMainWindow, form):
             "vision1": {
                 "frontend_receive_interval_ms": self._vision_cycle_ms,
                 "frontend_decode_ms": self._vision_decode_ms,
+                "frontend_compose_ms": self._vision_compose_ms,
                 "frontend_render_delay_ms": self._vision_render_delay_ms,
                 "frontend_render_interval_ms": self._vision_render_interval_ms,
                 "calib_input_interval_ms": self._calib_proc_input_ms_1,
@@ -6325,6 +7377,7 @@ class App(QMainWindow, form):
             "vision2": {
                 "frontend_receive_interval_ms": self._vision_cycle_ms_2,
                 "frontend_decode_ms": self._vision_decode_ms_2,
+                "frontend_compose_ms": self._vision_compose_ms_2,
                 "frontend_render_delay_ms": self._vision_render_delay_ms_2,
                 "frontend_render_interval_ms": self._vision_render_interval_ms_2,
                 "calib_input_interval_ms": self._calib_proc_input_ms_2,
@@ -9961,34 +11014,10 @@ class App(QMainWindow, form):
                     os.kill(pid, signal.SIGINT)
                 except Exception:
                     continue
-                deadline = time.monotonic() + 1.0
-                while time.monotonic() < deadline:
-                    try:
-                        os.kill(pid, 0)
-                    except OSError:
-                        pid = None
-                        break
-                    QApplication.processEvents()
-                    time.sleep(0.05)
-                if pid is not None:
-                    try:
-                        os.kill(pid, signal.SIGTERM)
-                    except Exception:
-                        pass
-                    deadline = time.monotonic() + 1.0
-                    while time.monotonic() < deadline:
-                        try:
-                            os.kill(pid, 0)
-                        except OSError:
-                            pid = None
-                            break
-                        QApplication.processEvents()
-                        time.sleep(0.05)
-                if pid is not None:
-                    try:
-                        os.kill(pid, signal.SIGKILL)
-                    except Exception:
-                        pass
+                try:
+                    os.kill(pid, signal.SIGTERM)
+                except Exception:
+                    pass
                 self.append_log(f"[비전{panel}] 기존 메타 헬퍼 정리: PID {parts[0]}\n")
 
     def _stop_foreign_calibration_helpers(self, panel_index: int, keep_pid=None):
@@ -10028,34 +11057,10 @@ class App(QMainWindow, form):
                 os.kill(pid, signal.SIGINT)
             except Exception:
                 continue
-            deadline = time.monotonic() + 1.0
-            while time.monotonic() < deadline:
-                try:
-                    os.kill(pid, 0)
-                except OSError:
-                    pid = None
-                    break
-                QApplication.processEvents()
-                time.sleep(0.05)
-            if pid is not None:
-                try:
-                    os.kill(pid, signal.SIGTERM)
-                except Exception:
-                    pass
-                deadline = time.monotonic() + 1.0
-                while time.monotonic() < deadline:
-                    try:
-                        os.kill(pid, 0)
-                    except OSError:
-                        pid = None
-                        break
-                    QApplication.processEvents()
-                    time.sleep(0.05)
-            if pid is not None:
-                try:
-                    os.kill(pid, signal.SIGKILL)
-                except Exception:
-                    pass
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except Exception:
+                pass
             self.append_log(f"[캘리브레이션{panel}] 기존 헬퍼 프로세스 정리: PID {parts[0]}\n")
 
     def _current_vision_image_topic(self):
@@ -10123,12 +11128,6 @@ class App(QMainWindow, form):
         except Exception as e:
             self.append_log(f"[비전{panel}] 메타 프로세스 시작 실패: {e}\n")
             return False
-        # Fail fast if helper exits immediately (missing dependency/model/topic args, etc.).
-        time.sleep(0.2)
-        exit_code = proc.poll()
-        if exit_code is not None:
-            self.append_log(f"[비전{panel}] 메타 프로세스 즉시 종료(code={exit_code})\n")
-            return False
         if panel == 2:
             self._external_vision_proc_2 = proc
             self._external_vision_cmd_2 = list(cmd)
@@ -10151,17 +11150,13 @@ class App(QMainWindow, form):
         if proc is not None and proc.poll() is None and started_by_ui:
             try:
                 proc.send_signal(signal.SIGINT)
-                proc.wait(timeout=1.0)
             except Exception:
-                try:
+                pass
+            try:
+                if proc.poll() is None:
                     proc.terminate()
-                    proc.wait(timeout=1.0)
-                except Exception:
-                    try:
-                        proc.kill()
-                        proc.wait(timeout=1.0)
-                    except Exception:
-                        pass
+            except Exception:
+                pass
         if panel == 2:
             self._external_vision_proc_2 = None
             self._external_vision_cmd_2 = None
@@ -10300,17 +11295,13 @@ class App(QMainWindow, form):
         if proc is not None and proc.poll() is None and started_by_ui:
             try:
                 proc.send_signal(signal.SIGINT)
-                proc.wait(timeout=1.0)
             except Exception:
-                try:
+                pass
+            try:
+                if proc.poll() is None:
                     proc.terminate()
-                    proc.wait(timeout=1.0)
-                except Exception:
-                    try:
-                        proc.kill()
-                        proc.wait(timeout=1.0)
-                    except Exception:
-                        pass
+            except Exception:
+                pass
         if panel == 2:
             self._calib_proc_2 = None
             self._calib_proc_cmd_2 = None
@@ -11742,6 +12733,63 @@ class App(QMainWindow, form):
         self._last_vision_frame_at_2 = t_now
         self._vision_state_text_2 = "정상 수신 중"
 
+    def _maybe_log_vision_render_stall(self, panel_index: int, render_delay_ms):
+        if render_delay_ms is None:
+            return
+        delay_ms = float(render_delay_ms)
+        if delay_ms < float(VISION_RENDER_STALL_WARN_MS):
+            return
+        panel = 2 if int(panel_index) == 2 else 1
+        now = time.monotonic()
+        attr = "_vision_render_stall_last_log_at_2" if panel == 2 else "_vision_render_stall_last_log_at_1"
+        last_at = float(getattr(self, attr, 0.0) or 0.0)
+        if (now - last_at) < float(VISION_RENDER_STALL_LOG_COOLDOWN_SEC):
+            return
+        setattr(self, attr, now)
+        decode_ms = self._vision_decode_ms_2 if panel == 2 else self._vision_decode_ms
+        compose_ms = self._vision_compose_ms_2 if panel == 2 else self._vision_compose_ms
+        self.append_log(
+            f"[UI-PERF][비전{panel}] render_delay={delay_ms:.1f}ms "
+            f"(decode={decode_ms if decode_ms is not None else '-'}ms, "
+            f"compose={compose_ms if compose_ms is not None else '-'}ms)\n"
+        )
+        self._append_ui_perf_log_file(
+            f"[비전{panel}] render_delay={delay_ms:.1f}ms "
+            f"(decode={decode_ms if decode_ms is not None else '-'}ms, "
+            f"compose={compose_ms if compose_ms is not None else '-'}ms)"
+        )
+
+    def _maybe_trace_vision_render_frame(self, panel_index: int):
+        if not bool(VISION_RENDER_TRACE_ENABLED):
+            return
+        panel = 2 if int(panel_index) == 2 else 1
+        now = time.monotonic()
+        attr = "_vision_render_trace_last_log_at_2" if panel == 2 else "_vision_render_trace_last_log_at_1"
+        last_at = float(getattr(self, attr, 0.0) or 0.0)
+        if (now - last_at) < float(VISION_RENDER_TRACE_MIN_INTERVAL_SEC):
+            return
+        setattr(self, attr, now)
+        if panel == 2:
+            delay_ms = self._vision_render_delay_ms_2
+            decode_ms = self._vision_decode_ms_2
+            compose_ms = self._vision_compose_ms_2
+            receive_ms = self._vision_cycle_ms_2
+            render_interval_ms = self._vision_render_interval_ms_2
+        else:
+            delay_ms = self._vision_render_delay_ms
+            decode_ms = self._vision_decode_ms
+            compose_ms = self._vision_compose_ms
+            receive_ms = self._vision_cycle_ms
+            render_interval_ms = self._vision_render_interval_ms
+        self._append_ui_perf_log_file(
+            f"vision_frame_trace[{panel}] "
+            f"delay={float(delay_ms) if delay_ms is not None else -1.0:.1f}ms "
+            f"decode={float(decode_ms) if decode_ms is not None else -1.0:.1f}ms "
+            f"compose={float(compose_ms) if compose_ms is not None else -1.0:.1f}ms "
+            f"receive={float(receive_ms) if receive_ms is not None else -1.0:.1f}ms "
+            f"render_interval={float(render_interval_ms) if render_interval_ms is not None else -1.0:.1f}ms"
+        )
+
     def _drain_pending_vision_frame_1(self):
         with self._vision_frame_lock_1:
             image1 = self._pending_yolo_qimage if self._vision_frame_pending else None
@@ -11755,14 +12803,16 @@ class App(QMainWindow, form):
             now = time.monotonic()
             if enqueued_at_1 is not None:
                 self._vision_render_delay_ms = max(0.0, (now - float(enqueued_at_1)) * 1000.0)
+                self._maybe_log_vision_render_stall(1, self._vision_render_delay_ms)
             if self._vision_render_prev_at is not None:
                 dt = now - self._vision_render_prev_at
                 if dt > 0.0:
                     self._vision_render_interval_ms = dt * 1000.0
             self._vision_render_prev_at = now
             self._last_yolo_qimage = image1
+            self._maybe_trace_vision_render_frame(1)
             self._render_yolo_view()
-            self._update_cycle_time_labels()
+            self._maybe_update_cycle_time_labels_from_vision()
 
     def _drain_pending_vision_frame_2(self):
         with self._vision_frame_lock_2:
@@ -11777,14 +12827,16 @@ class App(QMainWindow, form):
             now = time.monotonic()
             if enqueued_at_2 is not None:
                 self._vision_render_delay_ms_2 = max(0.0, (now - float(enqueued_at_2)) * 1000.0)
+                self._maybe_log_vision_render_stall(2, self._vision_render_delay_ms_2)
             if self._vision_render_prev_at_2 is not None:
                 dt = now - self._vision_render_prev_at_2
                 if dt > 0.0:
                     self._vision_render_interval_ms_2 = dt * 1000.0
             self._vision_render_prev_at_2 = now
             self._last_yolo_qimage_2 = image2
+            self._maybe_trace_vision_render_frame(2)
             self._render_yolo_view_2()
-            self._update_cycle_time_labels()
+            self._maybe_update_cycle_time_labels_from_vision()
 
     def _render_yolo_view(self):
         if not hasattr(self, "yolo_view"):
@@ -12132,19 +13184,9 @@ class App(QMainWindow, form):
                     self._yolo_pan_last_pos_2 = (cx, cy)
                     self._render_yolo_view_2()
                     return True
-                mapped = self._map_view_to_image_coords(event.pos().x(), event.pos().y(), panel_index=panel_index)
-                if mapped is None:
-                    if panel_index == 1:
-                        self._last_mouse_xy = None
-                    else:
-                        self._last_mouse_xy_2 = None
-                else:
-                    x, y = mapped
-                    if panel_index == 1:
-                        self._last_mouse_xy = (x, y)
-                    else:
-                        self._last_mouse_xy_2 = (x, y)
-                self._update_bottom_status()
+                # Hover move 이벤트에서는 좌표 갱신/상태 갱신을 생략해 UI 부하를 줄인다.
+                # (클릭/휠/팬 드래그 시에만 필요한 동작을 수행)
+                return False
             elif event.type() == QEvent.MouseButtonPress and event.button() == Qt.LeftButton:
                 mapped = self._map_view_to_image_coords(event.pos().x(), event.pos().y(), panel_index=panel_index)
                 if mapped is not None:
@@ -12391,6 +13433,75 @@ class App(QMainWindow, form):
                     label = str(labels[i]) if labels is not None and len(labels) > i else f"항목{i+1}"
                     return f"입력 범위 오류: {label}는 {float(min_v):.1f} ~ {float(max_v):.1f} 범위여야 합니다."
             vals.append(v)
+        return tuple(vals)
+
+    def _ask_three_values_form(self, title, labels, defaults, guide_text=None):
+        if labels is None or len(labels) < 3:
+            return "라벨 설정 오류: 3개 라벨이 필요합니다."
+        dialog = QDialog(self)
+        dialog.setWindowTitle(str(title))
+        dialog.setModal(True)
+        dialog.resize(340, 240)
+
+        layout = QVBoxLayout(dialog)
+        if guide_text:
+            guide_label = QLabel(str(guide_text), dialog)
+            guide_label.setWordWrap(True)
+            guide_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+            layout.addWidget(guide_label)
+
+        grid = QGridLayout()
+        edits = []
+        for i in range(3):
+            lbl = QLabel(str(labels[i]), dialog)
+            edit = QLineEdit(dialog)
+            edit.setStyleSheet(
+                "QLineEdit {"
+                " selection-background-color: #1f6feb;"
+                " selection-color: #ffffff;"
+                "}"
+            )
+            edit_palette = edit.palette()
+            for group in (QPalette.Active, QPalette.Inactive, QPalette.Disabled):
+                edit_palette.setColor(group, QPalette.Highlight, QColor("#1f6feb"))
+                edit_palette.setColor(group, QPalette.HighlightedText, QColor("#ffffff"))
+            edit.setPalette(edit_palette)
+            v = float(defaults[i]) if defaults is not None and len(defaults) > i else 0.0
+            edit.setText(f"{v:.3f}")
+            edit.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            edit.setMaxLength(16)
+            validator = QDoubleValidator(-999999.0, 999999.0, 3, edit)
+            validator.setNotation(QDoubleValidator.StandardNotation)
+            edit.setValidator(validator)
+            grid.addWidget(lbl, i, 0)
+            grid.addWidget(edit, i, 1)
+            edits.append(edit)
+        layout.addLayout(grid)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel, parent=dialog)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+
+        if edits:
+            edits[0].setFocus()
+            edits[0].selectAll()
+
+        if dialog.exec_() != QDialog.Accepted:
+            return None
+
+        vals = []
+        for edit in edits:
+            raw = edit.text().strip()
+            if raw == "":
+                return "입력 형식 오류: 빈 칸 없이 숫자를 입력하세요."
+            try:
+                v = float(raw)
+            except Exception:
+                return "입력 형식 오류: 숫자만 입력하세요."
+            if not np.isfinite(v):
+                return "입력 형식 오류: 유효한 숫자를 입력하세요."
+            vals.append(float(v))
         return tuple(vals)
 
     def _confirm_motion_with_values(self, title, intro, labels, values, log_prefix):
@@ -12646,6 +13757,7 @@ class App(QMainWindow, form):
             self._stop_voice_order_mic_test_monitor("앱 종료")
             self._stop_voice_cycle_worker(reason="앱 종료")
             self._stop_voice_order_worker(reason="앱 종료")
+            self._stop_webui_order_start_sync_worker()
             if self._reset_thread is not None:
                 self._reset_thread.quit()
                 if not self._reset_thread.wait(800):

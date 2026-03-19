@@ -3,10 +3,10 @@ active_calibration_path,config/calibration/calib_matrix_260312_214034.txt
 active_calibration_path_1,config/calibration/calib_matrix_260312_214034.txt
 active_calibration_path_2,config/calibration/calib_matrix_260225_131257.txt
 home_posj,28.000000,-35.000000,100.000000,77.000000,63.000000,-154.000000
-top_status_robot_enabled,1
-top_status_vision2_enabled,1
+top_status_robot_enabled,0
+top_status_vision2_enabled,0
 top_status_vision_enabled,1
-top_status_voice_enabled,1
+top_status_voice_enabled,0
 vision1_calib_seq_end_enabled,1
 vision1_calib_seq_initial_enabled,1
 vision1_calib_seq_p10_enabled,1
@@ -62,7 +62,7 @@ vision1_calib_seq_wait2_j,120.295000,-17.251000,53.579000,-239.722000,-74.000000
 vision1_calib_seq_wait2_pose6,78.738000,504.540000,829.924000,62.824000,88.011000,-90.006000
 vision1_calib_seq_wait2_xyzabc,78.738000,504.540000,829.924000,62.824000,88.011000,-90.006000
 vision1_calibration_enabled,0
-vision1_serial,311322302867
+vision1_serial,309622301423
 vision1_view_rotation_deg,180
 vision2_calibration_enabled,0
 vision2_serial,313522301601

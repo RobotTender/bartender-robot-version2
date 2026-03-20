@@ -11,7 +11,11 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent
 SYSTEM_LAUNCH_PATH = REPO_ROOT / "launch" / "system_launch.py"
 BOOTSTRAP_ENV_KEY = "BARTENDER_ENV_BOOTSTRAPPED"
-DEFAULT_VISION_PYTHON = Path("/home/up/venv-vision/bin/python")
+DEFAULT_VISION_PYTHON_CANDIDATES = [
+    REPO_ROOT / ".venv-vision" / "bin" / "python",
+    REPO_ROOT / "venv-vision" / "bin" / "python",
+    REPO_ROOT.parent / "venv-vision" / "bin" / "python",
+]
 
 
 def _find_ros_setup():
@@ -87,8 +91,10 @@ def _ensure_default_vision_python():
     # Keep app/backend interpreter as-is, but pin vision helpers to dedicated venv by default.
     if str(os.environ.get("BARTENDER_VISION_PYTHON", "")).strip():
         return
-    if DEFAULT_VISION_PYTHON.is_file():
-        os.environ["BARTENDER_VISION_PYTHON"] = str(DEFAULT_VISION_PYTHON)
+    for candidate in DEFAULT_VISION_PYTHON_CANDIDATES:
+        if candidate.is_file():
+            os.environ["BARTENDER_VISION_PYTHON"] = str(candidate)
+            return
 
 
 if __name__ == "__main__":

@@ -10,15 +10,15 @@
 
 ## 주요 파일
 
-- `/home/up/ros2_ws/src/bartender-robot/src/order_integration/voice_order_pipeline.py`
+- `src/order_integration/voice_order_pipeline.py`
   - 메뉴 분류/레시피 도출 + stage 이벤트/결과 payload 생성 로직
-- `/home/up/ros2_ws/src/bartender-robot/src/order_integration/voice_order_worker.py`
+- `src/order_integration/voice_order_worker.py`
   - 백엔드 요청을 받아 STT/분류를 실행하는 음성 워커
-- `/home/up/ros2_ws/src/bartender-robot/src/order_integration/voice_order_route.py`
+- `src/order_integration/voice_order_route.py`
   - 백엔드에서 음성 워커 subprocess를 호출하는 래퍼
-- `/home/up/ros2_ws/src/bartender-robot/src/frontend/user_frontend.py`
+- `src/frontend/user_frontend.py`
   - 최종 사용자용 WEB UI 서버
-- `/home/up/ros2_ws/src/bartender-robot/src/frontend/developer_frontend.py`
+- `src/frontend/developer_frontend.py`
   - 음성주문 패널(상태/업데이트/WEB UI 링크) 표시
 
 ## WEB UI 실행

@@ -426,10 +426,8 @@ def _build_liquid_robot_action_pose_rows(ingredient_code: str, ingredient_label:
             "config_group": "poses",
             "config_key": f"{code}_service_ready_posj",
             "var_name": f"{prefix_upper}_SERVICE_READY_POSJ",
-            "label": f"{label} 병 집기 준비(service_ready)",
-            "desc": "위치참조",
-            "editable": False,
-            "reference_only": True,
+            "label": f"{label} 병 집기 준비(service_ready, 기준값)",
+            "desc": "기준 위치(수정/티칭 가능)",
         },
         {
             "tab": code,
@@ -2794,6 +2792,19 @@ class App(QMainWindow, form):
             txt = re.sub(r"\s*\(return_ref\)\s*$", "", txt, flags=re.IGNORECASE)
             return txt.strip().lower()
 
+        def _selection_var_key(row_def):
+            row_type = str(row_def.get("type", "") or "").strip().lower()
+            ingredient_code = str(row_def.get("ingredient_code", "") or "").strip().lower()
+            if row_type in ("menu_gripper_open_mm", "gripper_open_action"):
+                if ingredient_code:
+                    return f"{ingredient_code}::gripper_open_mm"
+                return "gripper_open_mm"
+            if row_type in ("menu_gripper_close_mm", "gripper_close_action"):
+                if ingredient_code:
+                    return f"{ingredient_code}::gripper_close_mm"
+                return "gripper_close_mm"
+            return _normalized_var_key(row_def.get("var_name", ""))
+
         def _display_var_name(raw_name):
             txt = _normalized_var_key(raw_name)
             if not txt:
@@ -3734,7 +3745,7 @@ class App(QMainWindow, form):
                     "extra_move_btns": list(extra_move_btns),
                     "button_wrap": button_wrap,
                     "base_bg_hex": "#fff9db" if str(row_def.get("section", "") or "").startswith("[0]") else "",
-                    "var_key": _normalized_var_key(row_def.get("var_name", "")),
+                    "var_key": _selection_var_key(row_def),
                 }
                 if move_btn is not None:
                     move_btn.clicked.connect(

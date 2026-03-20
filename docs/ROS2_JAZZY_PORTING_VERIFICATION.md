@@ -38,13 +38,13 @@
 - PyQt5: `5.15.10`
 
 ### 연동 저장소/패키지 버전
-- `/home/up/ros2_ws/src/doosan-robot2`
+- `<ros2_ws>/src/doosan-robot2`
   - branch: `jazzy`
   - commit: `3ef2717`
   - `dsr_common2`: `1.1.0`
   - `dsr_controller2`: `2.33.0`
   - `dsr_bringup2`: `1.1.0`
-- `/home/up/ros2_ws/src/od-realsense`
+- `<ros2_ws>/src/od-realsense`
   - detached HEAD: `8574b22`
 
 ## 2) 변경사항 요약 (폴더 전체 관점)

@@ -133,6 +133,38 @@ developer_frontend.py
 - 주문기능 머지 1차 상태: [docs/ORDER_FEATURE_MERGE_PHASE1.md](docs/ORDER_FEATURE_MERGE_PHASE1.md)
 - 배포 절차: [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)
 - 벤더 패치: [docs/VENDOR_PATCHES.md](docs/VENDOR_PATCHES.md)
+- 모션 시퀀스 수정/테스트 상세 가이드: [docs/MOTION_SEQUENCE_EDIT_TEST_GUIDE.md](docs/MOTION_SEQUENCE_EDIT_TEST_GUIDE.md)
+
+## 모션 시퀀스 최신 업데이트 (2026-03-20)
+
+- 액션 포지션 설정창 탭 구조 정리
+  - `소주/맥주/글라스잔` 탭 분리, 타입 축약 표기(`posj`, `posx`, `g_open`, `g_close` 등)
+- 시퀀스 표기 정리
+  - 행 전체 선택/하이라이트 및 같은 탭 내 동일 변수 참조행 동시 하이라이트
+  - `(return_ref)` 표기 제거(변수명 표시 기준)
+- 참조형 표준화
+  - `service_ready_posj`는 상단 기준값 1개(수정/티칭 가능) + 중간 참조행(이동/실행 참조) 구조로 정리
+  - return 역순 참조행, 그리퍼 오픈/파지 행은 참조형으로 통일
+  - 참조형은 `현재값 '-'`, `설명 '위치참조'`, `상태 '참조'`, 이동/실행만 허용
+- 시퀀스 항목 보강
+  - 글라스 DELIVERY에 `전달 위치 이탈` 항목 추가
+  - PICK/RETURN에서 그리퍼 순서 표기를 실제 흐름에 맞게 정리
+- 현재 실행 기준 주의
+  - `robot_action_planner.py`의 `_append_finish_sequence(...)` 내부 CUP PICK/DELIVERY 모션 블록은 주석 처리 상태
+  - 기본 planner 실행에서는 `[glass] 완성컵 처리 시퀀스 시작` 로그만 남고 컵 전달 step은 실행되지 않음
+- 실행 안정성 보강
+  - 시퀀스 실행 직전 그리퍼 초기화 확인 및 필요 시 재초기화 후 진행
+  - 실시간 pour 반응성 파라미터(`BARTENDER_LIVE_POUR_*`) 기본값 정리
+- 유지된 동작(미변경)
+  - 백엔드 실행 진입점(`run_bartender_first_ingredient_action`)과 시퀀스 API(`/api/sequence/start|stop|state`) 구조 유지
+- UI 정리/제거 항목
+  - 액션 포지션 표의 `수정` 버튼 제거(값 셀 클릭 방식으로 통일)
+  - `값클릭수정`, `이동전용`, `보기` 텍스트 라벨 제거
+  - 그리퍼 오픈/파지 결합 행(`gripper_actions`) 표기 제거, 단일 액션 행으로 분리
+
+위 항목의 실제 수정/검증 절차(스크린샷 삽입 위치 포함)는 아래 문서를 참고하세요.
+
+- [docs/MOTION_SEQUENCE_EDIT_TEST_GUIDE.md](docs/MOTION_SEQUENCE_EDIT_TEST_GUIDE.md)
 
 ## 현재 주의사항
 

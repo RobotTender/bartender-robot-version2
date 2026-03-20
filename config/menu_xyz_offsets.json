@@ -7,7 +7,8 @@
         0.0,
         -50.0
       ],
-      "gripper_close_mm": 44.0
+      "gripper_close_mm": 44.0,
+      "gripper_open_mm": 109.0
     },
     "beer": {
       "label": "맥주",
@@ -16,7 +17,8 @@
         0.0,
         0.0
       ],
-      "gripper_close_mm": 41.0
+      "gripper_close_mm": 41.0,
+      "gripper_open_mm": 109.0
     },
     "glass": {
       "label": "완성컵",
@@ -25,7 +27,8 @@
         0.0,
         0.0
       ],
-      "gripper_close_mm": 41.0
+      "gripper_close_mm": 41.0,
+      "gripper_open_mm": 109.0
     }
   }
 }

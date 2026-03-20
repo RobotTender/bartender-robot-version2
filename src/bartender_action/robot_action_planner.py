@@ -65,6 +65,23 @@ POUR_CONTACT_POSJ = [45.00, 43.58, 134.19, 90.01, -90.00, -62.23]
 POUR_HORIZONTAL_POSJ = [42.43, 21.08, 129.85, 87.75, -88.75, -29.06]
 POUR_DIAGONAL_POSJ = [41.83, -5.00, 134.35, 87.99, -87.55, -0.61]
 POUR_VERTICAL_POSJ = [38.76, -35.80, 146.74, 87.76, -84.18, 22.06]
+LIQUID_INGREDIENT_CODES = ("soju", "beer")
+POUR_POSE_BY_INGREDIENT_DEFAULTS = {
+    "soju": {
+        "pour_start_cheers_posj": [45.0, 0.0, 135.0, 90.0, -90.0, -135.0],
+        "pour_contact_posj": [40.53, 40.36, 134.88, 85.56, -89.63, -64.75],
+        "pour_horizontal_posj": [39.63, 18.89, 132.0, 85.3, -87.39, -29.02],
+        "pour_diagonal_posj": [38.12, -7.68, 137.65, 85.57, -84.73, 0.16],
+        "pour_vertical_posj": [36.16, -33.75, 145.95, 86.64, -81.83, 23.45],
+    },
+    "beer": {
+        "pour_start_cheers_posj": [45.0, 0.0, 135.0, 90.0, -90.0, -135.0],
+        "pour_contact_posj": [40.29, 26.46, 139.23, 85.45, -88.84, -74.27],
+        "pour_horizontal_posj": [37.99, 7.03, 143.01, 83.92, -86.51, -29.79],
+        "pour_diagonal_posj": [36.62, -6.09, 147.33, 83.45, -84.76, 11.53],
+        "pour_vertical_posj": [36.16, -28.4, 150.63, 85.26, -82.54, 33.54],
+    },
+}
 CUP_PICK_READY_POSJ = list(SERVICE_READY_POSJ)
 CUP_DELIVERY_READY_POSJ = list(SERVICE_READY_POSJ)
 
@@ -81,8 +98,30 @@ GRIPPER_OPEN_MM_DEFAULT = 109.0
 GRIPPER_CLOSE_MM_DEFAULT = 41.0
 
 # 실시간 따르기 제어 파라미터
-LIVE_POUR_VOLUME_POLL_SEC = 0.01
-LIVE_POUR_FINAL_WAIT_POLL_SEC = 0.01
+try:
+    LIVE_POUR_VOLUME_POLL_SEC = max(
+        0.001, float(os.environ.get("BARTENDER_LIVE_POUR_VOLUME_POLL_SEC", "0.002"))
+    )
+except Exception:
+    LIVE_POUR_VOLUME_POLL_SEC = 0.002
+try:
+    LIVE_POUR_FINAL_WAIT_POLL_SEC = max(
+        0.001, float(os.environ.get("BARTENDER_LIVE_POUR_FINAL_WAIT_POLL_SEC", "0.002"))
+    )
+except Exception:
+    LIVE_POUR_FINAL_WAIT_POLL_SEC = 0.002
+try:
+    LIVE_POUR_VOLUME_MAX_AGE_SEC = max(
+        0.01, float(os.environ.get("BARTENDER_LIVE_POUR_VOLUME_MAX_AGE_SEC", "0.05"))
+    )
+except Exception:
+    LIVE_POUR_VOLUME_MAX_AGE_SEC = 0.05
+try:
+    LIVE_POUR_MIN_POLL_SEC = max(
+        0.0005, float(os.environ.get("BARTENDER_LIVE_POUR_MIN_POLL_SEC", "0.001"))
+    )
+except Exception:
+    LIVE_POUR_MIN_POLL_SEC = 0.001
 
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.abspath(os.path.join(CURRENT_DIR, "..", ".."))
@@ -112,6 +151,11 @@ RUNTIME_POSE_DEFAULTS = {
     "cup_delivery_approach_posx": list(CUP_DELIVERY_APPROACH_POSX),
     "cup_delivery_pose_posx": list(CUP_DELIVERY_POSE_POSX),
 }
+for _ingredient_code in LIQUID_INGREDIENT_CODES:
+    RUNTIME_POSE_DEFAULTS[f"{_ingredient_code}_service_ready_posj"] = list(SERVICE_READY_POSJ)
+    RUNTIME_POSE_DEFAULTS[f"{_ingredient_code}_pick_lift_out_posx"] = list(PICK_LIFT_OUT_POSX)
+    for _suffix, _vals in dict(POUR_POSE_BY_INGREDIENT_DEFAULTS.get(_ingredient_code, {})).items():
+        RUNTIME_POSE_DEFAULTS[f"{_ingredient_code}_{_suffix}"] = [float(v) for v in list(_vals)[:6]]
 
 # runtime_cfg가 비어있거나 파일 로드 실패 시 사용하는 기본 오프셋
 RUNTIME_OFFSET_DEFAULTS_XYZ_MM = {
@@ -121,6 +165,12 @@ RUNTIME_OFFSET_DEFAULTS_XYZ_MM = {
     "place_offset": [0.0, 0.0, 0.0],
     "retreat_offset": [-20.0, -50.0, 0.0],
 }
+for _ingredient_code in LIQUID_INGREDIENT_CODES:
+    RUNTIME_OFFSET_DEFAULTS_XYZ_MM[f"{_ingredient_code}_pick_approach_offset"] = [0.0, -50.0, 0.0]
+    RUNTIME_OFFSET_DEFAULTS_XYZ_MM[f"{_ingredient_code}_pick_grasp_offset"] = [0.0, 0.0, 0.0]
+    RUNTIME_OFFSET_DEFAULTS_XYZ_MM[f"{_ingredient_code}_pick_lift_offset"] = [0.0, 0.0, 100.0]
+    RUNTIME_OFFSET_DEFAULTS_XYZ_MM[f"{_ingredient_code}_place_offset"] = [0.0, 0.0, 0.0]
+    RUNTIME_OFFSET_DEFAULTS_XYZ_MM[f"{_ingredient_code}_retreat_offset"] = [-20.0, -50.0, 0.0]
 
 
 class PlannerSequenceApi:
@@ -572,6 +622,13 @@ def _sanitize_gripper_close_mm(value: Any, default_mm: float = GRIPPER_CLOSE_MM_
     return max(0.0, min(float(GRIPPER_OPEN_MM_DEFAULT), float(v)))
 
 
+def _sanitize_gripper_open_mm(value: Any, default_mm: float = GRIPPER_OPEN_MM_DEFAULT):
+    v = _safe_float(value)
+    if v is None or (not math.isfinite(v)):
+        return float(default_mm)
+    return max(0.0, min(float(GRIPPER_OPEN_MM_DEFAULT), float(v)))
+
+
 def _clone_runtime_motion_config():
     return {
         "poses": {
@@ -581,6 +638,9 @@ def _clone_runtime_motion_config():
         "offsets_xyz_mm": {
             str(key): [float(v) for v in list(vals)[:3]]
             for key, vals in RUNTIME_OFFSET_DEFAULTS_XYZ_MM.items()
+        },
+        "gripper": {
+            "open_mm_default": float(GRIPPER_OPEN_MM_DEFAULT),
         },
     }
 
@@ -664,7 +724,8 @@ def _apply_runtime_motion_override(runtime_cfg: dict, raw: Any):
         return
     poses_dst = runtime_cfg.get("poses", {})
     offsets_dst = runtime_cfg.get("offsets_xyz_mm", {})
-    if not isinstance(poses_dst, dict) or not isinstance(offsets_dst, dict):
+    gripper_dst = runtime_cfg.get("gripper", {})
+    if not isinstance(poses_dst, dict) or not isinstance(offsets_dst, dict) or (not isinstance(gripper_dst, dict)):
         return
 
     poses_raw = raw.get("poses")
@@ -694,9 +755,39 @@ def _apply_runtime_motion_override(runtime_cfg: dict, raw: Any):
                         continue
                     poses_dst[dst_key] = list(legacy_ready_posj)
                     break
+        shared_pose_suffixes = (
+            "service_ready_posj",
+            "pick_lift_out_posx",
+            "pour_start_cheers_posj",
+            "pour_contact_posj",
+            "pour_horizontal_posj",
+            "pour_diagonal_posj",
+            "pour_vertical_posj",
+        )
+        for suffix in shared_pose_suffixes:
+            shared_vals = None
+            for dst_key in list(poses_dst.keys()):
+                if _norm_code(dst_key) != str(suffix):
+                    continue
+                parsed = _as_pose6_or_none(poses_dst.get(dst_key))
+                if parsed is not None:
+                    shared_vals = list(parsed)
+                break
+            if shared_vals is None:
+                continue
+            for ingredient_code in LIQUID_INGREDIENT_CODES:
+                ingredient_key = f"{ingredient_code}_{suffix}"
+                if ingredient_key in explicit_pose_keys:
+                    continue
+                for dst_key in list(poses_dst.keys()):
+                    if _norm_code(dst_key) != ingredient_key:
+                        continue
+                    poses_dst[dst_key] = list(shared_vals)
+                    break
 
     offsets_raw = raw.get("offsets_xyz_mm")
     if isinstance(offsets_raw, dict):
+        explicit_offset_keys = set()
         for key, value in offsets_raw.items():
             norm_key = _canonical_runtime_offset_key(key)
             if not norm_key:
@@ -707,7 +798,44 @@ def _apply_runtime_motion_override(runtime_cfg: dict, raw: Any):
                 parsed = _as_xyz_or_none(value)
                 if parsed is not None:
                     offsets_dst[dst_key] = list(parsed)
+                    explicit_offset_keys.add(norm_key)
                 break
+        shared_offset_suffixes = (
+            "pick_approach_offset",
+            "pick_grasp_offset",
+            "pick_lift_offset",
+            "place_offset",
+            "retreat_offset",
+        )
+        for suffix in shared_offset_suffixes:
+            shared_vals = None
+            for dst_key in list(offsets_dst.keys()):
+                if _norm_code(dst_key) != str(suffix):
+                    continue
+                parsed = _as_xyz_or_none(offsets_dst.get(dst_key))
+                if parsed is not None:
+                    shared_vals = list(parsed)
+                break
+            if shared_vals is None:
+                continue
+            for ingredient_code in LIQUID_INGREDIENT_CODES:
+                ingredient_key = f"{ingredient_code}_{suffix}"
+                if ingredient_key in explicit_offset_keys:
+                    continue
+                for dst_key in list(offsets_dst.keys()):
+                    if _norm_code(dst_key) != ingredient_key:
+                        continue
+                    offsets_dst[dst_key] = list(shared_vals)
+                    break
+
+    gripper_raw = raw.get("gripper")
+    if isinstance(gripper_raw, dict):
+        open_raw = gripper_raw.get("open_mm_default", gripper_raw.get("gripper_open_mm_default", None))
+        open_mm = _sanitize_gripper_open_mm(open_raw, default_mm=GRIPPER_OPEN_MM_DEFAULT)
+        gripper_dst["open_mm_default"] = float(open_mm)
+    elif "gripper_open_mm_default" in raw:
+        open_mm = _sanitize_gripper_open_mm(raw.get("gripper_open_mm_default"), default_mm=GRIPPER_OPEN_MM_DEFAULT)
+        gripper_dst["open_mm_default"] = float(open_mm)
 
 
 def _resolve_runtime_motion_config(context: dict):
@@ -750,6 +878,65 @@ def _runtime_offset_xyz(runtime_cfg: dict | None, key: str, fallback_xyz=(0.0, 0
             if parsed is not None:
                 return parsed
     return list(fallback)
+
+
+def _runtime_gripper_open_mm(runtime_cfg: dict | None, fallback_mm: float = GRIPPER_OPEN_MM_DEFAULT):
+    if isinstance(runtime_cfg, dict):
+        gripper = runtime_cfg.get("gripper", {})
+        if isinstance(gripper, dict):
+            return float(
+                _sanitize_gripper_open_mm(
+                    gripper.get("open_mm_default", gripper.get("gripper_open_mm_default", fallback_mm)),
+                    default_mm=fallback_mm,
+                )
+            )
+    return float(_sanitize_gripper_open_mm(fallback_mm, default_mm=GRIPPER_OPEN_MM_DEFAULT))
+
+
+def _runtime_pose6_for_ingredient(runtime_cfg: dict | None, *, ingredient_code: str, suffix: str, fallback_pose6):
+    code = _norm_code(ingredient_code)
+    key = str(suffix or "").strip()
+    if code and key:
+        ingredient_key_norm = f"{code}_{key}"
+        if isinstance(runtime_cfg, dict):
+            poses = runtime_cfg.get("poses", {})
+            if isinstance(poses, dict):
+                for runtime_key, runtime_vals in poses.items():
+                    if _norm_code(runtime_key) != ingredient_key_norm:
+                        continue
+                    parsed = _as_pose6_or_none(runtime_vals)
+                    if parsed is not None:
+                        return list(parsed)
+                    break
+    resolved_shared = _runtime_pose6(runtime_cfg, key, fallback_pose6)
+    parsed_shared = _as_pose6_or_none(resolved_shared)
+    if parsed_shared is not None:
+        return list(parsed_shared)
+    parsed_fallback = _as_pose6_or_none(fallback_pose6)
+    return list(parsed_fallback if parsed_fallback is not None else [0.0] * 6)
+
+
+def _runtime_offset_xyz_for_ingredient(runtime_cfg: dict | None, *, ingredient_code: str, suffix: str, fallback_xyz):
+    code = _norm_code(ingredient_code)
+    key = str(suffix or "").strip()
+    if code and key:
+        ingredient_key_norm = f"{code}_{key}"
+        if isinstance(runtime_cfg, dict):
+            offsets = runtime_cfg.get("offsets_xyz_mm", {})
+            if isinstance(offsets, dict):
+                for runtime_key, runtime_vals in offsets.items():
+                    if _norm_code(runtime_key) != ingredient_key_norm:
+                        continue
+                    parsed = _as_xyz_or_none(runtime_vals)
+                    if parsed is not None:
+                        return list(parsed)
+                    break
+    resolved_shared = _runtime_offset_xyz(runtime_cfg, key, fallback_xyz)
+    parsed_shared = _as_xyz_or_none(resolved_shared)
+    if parsed_shared is not None:
+        return list(parsed_shared)
+    parsed_fallback = _as_xyz_or_none(fallback_xyz)
+    return list(parsed_fallback if parsed_fallback is not None else [0.0, 0.0, 0.0])
 
 
 def _supports_live_volume_feedback(api: PlannerSequenceApi):
@@ -823,6 +1010,28 @@ def _extract_menu_gripper_close_map(context: dict):
         if (not math.isfinite(value)) or value < 0.0:
             continue
         out[code] = float(value)
+    return out
+
+
+def _extract_menu_gripper_open_map(context: dict):
+    ctx = dict(context or {})
+    raw = ctx.get("menu_offsets", {})
+    if not isinstance(raw, dict):
+        return {}
+    source = raw.get("menus", raw) if isinstance(raw.get("menus", None), dict) else raw
+    out = {}
+    for key, payload in source.items():
+        code = _norm_code(key)
+        if (not code) or (not isinstance(payload, dict)):
+            continue
+        raw_value = payload.get("gripper_open_mm", payload.get("gripper_open_mm_default", None))
+        try:
+            value = float(raw_value)
+        except Exception:
+            continue
+        if (not math.isfinite(value)) or value < 0.0:
+            continue
+        out[code] = float(min(float(GRIPPER_OPEN_MM_DEFAULT), float(value)))
     return out
 
 
@@ -936,11 +1145,12 @@ def _resolve_recipe_in_menu_order(order_result: dict):
     return resolved, selected_menu, ""
 
 
-def _resolve_targets_from_recipe(recipe_items, detections, gripper_close_map=None):
+def _resolve_targets_from_recipe(recipe_items, detections, gripper_close_map=None, gripper_open_map=None):
     picked_targets = []
     missing_ingredients = []
     resolved_targets = []
     grip_map = dict(gripper_close_map or {})
+    grip_open_map = dict(gripper_open_map or {})
 
     cumulative_target_ml = 0.0
     for ingredient_code, amount_ml in recipe_items:
@@ -955,6 +1165,10 @@ def _resolve_targets_from_recipe(recipe_items, detections, gripper_close_map=Non
             "amount_ml": float(amount_ml),
             "target_volume_ml": float(cumulative_target_ml),
             "gripper_close_mm": _sanitize_gripper_close_mm(grip_map.get(_norm_code(ingredient_code), GRIPPER_CLOSE_MM_DEFAULT)),
+            "gripper_open_mm": _sanitize_gripper_open_mm(
+                grip_open_map.get(_norm_code(ingredient_code), GRIPPER_OPEN_MM_DEFAULT),
+                default_mm=GRIPPER_OPEN_MM_DEFAULT,
+            ),
             "detection": dict(det),
         }
         resolved_targets.append(row)
@@ -968,7 +1182,7 @@ def _resolve_targets_from_recipe(recipe_items, detections, gripper_close_map=Non
 # ---------------------------------------------------------------------------
 
 
-def _read_current_volume_safe(api: PlannerSequenceApi, *, max_age_sec: float = 0.8):
+def _read_current_volume_safe(api: PlannerSequenceApi, *, max_age_sec: float = LIVE_POUR_VOLUME_MAX_AGE_SEC):
     try:
         value = float(api.get_current_volume_ml(max_age_sec=max_age_sec))
     except Exception as exc:
@@ -1019,7 +1233,7 @@ def _run_movesx_path_with_volume_trigger(
 
     def _watch_volume_and_trigger():
         while not stop_watch.is_set():
-            volume_now, _msg = _read_current_volume_safe(api, max_age_sec=0.8)
+            volume_now, _msg = _read_current_volume_safe(api, max_age_sec=LIVE_POUR_VOLUME_MAX_AGE_SEC)
             if volume_now is not None:
                 state["last_volume"] = float(volume_now)
                 if float(state["last_volume"]) >= float(target_volume_ml):
@@ -1028,7 +1242,7 @@ def _run_movesx_path_with_volume_trigger(
                         state["stop_error"] = str(msg_stop or "정지 실패")
                     reached.set()
                     break
-            time.sleep(max(0.01, float(poll_sec)))
+            time.sleep(max(float(LIVE_POUR_MIN_POLL_SEC), float(poll_sec)))
 
     watcher = threading.Thread(
         target=_watch_volume_and_trigger,
@@ -1107,11 +1321,36 @@ def _execute_live_volume_feedback_pour_sequence(
 
     target_ml = float(target_volume_ml)
     _emit_sequence_log(api, f"[{ingredient_code}] 실시간 따르기 시작(target={target_ml:.1f}ml)")
-    pour_start_cheers_posj = _runtime_pose6(runtime_cfg, "pour_start_cheers_posj", POUR_START_CHEERS_POSJ)
-    pour_contact_posj = _runtime_pose6(runtime_cfg, "pour_contact_posj", POUR_CONTACT_POSJ)
-    pour_horizontal_posj = _runtime_pose6(runtime_cfg, "pour_horizontal_posj", POUR_HORIZONTAL_POSJ)
-    pour_diagonal_posj = _runtime_pose6(runtime_cfg, "pour_diagonal_posj", POUR_DIAGONAL_POSJ)
-    pour_vertical_posj = _runtime_pose6(runtime_cfg, "pour_vertical_posj", POUR_VERTICAL_POSJ)
+    pour_start_cheers_posj = _runtime_pose6_for_ingredient(
+        runtime_cfg,
+        ingredient_code=ingredient_code,
+        suffix="pour_start_cheers_posj",
+        fallback_pose6=POUR_START_CHEERS_POSJ,
+    )
+    pour_contact_posj = _runtime_pose6_for_ingredient(
+        runtime_cfg,
+        ingredient_code=ingredient_code,
+        suffix="pour_contact_posj",
+        fallback_pose6=POUR_CONTACT_POSJ,
+    )
+    pour_horizontal_posj = _runtime_pose6_for_ingredient(
+        runtime_cfg,
+        ingredient_code=ingredient_code,
+        suffix="pour_horizontal_posj",
+        fallback_pose6=POUR_HORIZONTAL_POSJ,
+    )
+    pour_diagonal_posj = _runtime_pose6_for_ingredient(
+        runtime_cfg,
+        ingredient_code=ingredient_code,
+        suffix="pour_diagonal_posj",
+        fallback_pose6=POUR_DIAGONAL_POSJ,
+    )
+    pour_vertical_posj = _runtime_pose6_for_ingredient(
+        runtime_cfg,
+        ingredient_code=ingredient_code,
+        suffix="pour_vertical_posj",
+        fallback_pose6=POUR_VERTICAL_POSJ,
+    )
 
     # Setup trajectories (원본 형태 유지)
     p0 = list(pour_start_cheers_posj)
@@ -1171,7 +1410,7 @@ def _execute_live_volume_feedback_pour_sequence(
         reached_idx = len(forward_path) - 1
         deadline = time.monotonic() + 5.0
         while time.monotonic() <= deadline:
-            volume_now, _msg = _read_current_volume_safe(api, max_age_sec=0.8)
+            volume_now, _msg = _read_current_volume_safe(api, max_age_sec=LIVE_POUR_VOLUME_MAX_AGE_SEC)
             if volume_now is not None:
                 last_volume = float(volume_now)
                 if float(last_volume) >= float(target_ml):
@@ -1252,24 +1491,88 @@ def _append_ingredient_sequence(api: PlannerSequenceApi, row: dict, seq_index: i
     target_volume_ml = float(row["target_volume_ml"])
     target_volume_text = f"{target_volume_ml:.1f}ml"
     gripper_close_mm = _sanitize_gripper_close_mm(row.get("gripper_close_mm", GRIPPER_CLOSE_MM_DEFAULT))
+    gripper_open_mm = _sanitize_gripper_open_mm(
+        row.get("gripper_open_mm", _runtime_gripper_open_mm(runtime_cfg, fallback_mm=GRIPPER_OPEN_MM_DEFAULT)),
+        default_mm=GRIPPER_OPEN_MM_DEFAULT,
+    )
     target_key = f"ingredient_{int(seq_index)}_{ingredient_code}_target"
-    service_ready_posj = _runtime_pose6(runtime_cfg, "service_ready_posj", SERVICE_READY_POSJ)
-    pour_start_cheers_posj = _runtime_pose6(runtime_cfg, "pour_start_cheers_posj", POUR_START_CHEERS_POSJ)
-    pour_contact_posj = _runtime_pose6(runtime_cfg, "pour_contact_posj", POUR_CONTACT_POSJ)
-    pour_horizontal_posj = _runtime_pose6(runtime_cfg, "pour_horizontal_posj", POUR_HORIZONTAL_POSJ)
-    pour_diagonal_posj = _runtime_pose6(runtime_cfg, "pour_diagonal_posj", POUR_DIAGONAL_POSJ)
-    pour_vertical_posj = _runtime_pose6(runtime_cfg, "pour_vertical_posj", POUR_VERTICAL_POSJ)
-    pick_approach_offset = _runtime_offset_xyz(runtime_cfg, "pick_approach_offset", [0.0, -50.0, 0.0])
-    pick_grasp_offset = _runtime_offset_xyz(runtime_cfg, "pick_grasp_offset", [0.0, 0.0, 0.0])
-    pick_lift_offset = _runtime_offset_xyz(runtime_cfg, "pick_lift_offset", [0.0, 0.0, 100.0])
-    pick_lift_out_posx = _runtime_pose6(runtime_cfg, "pick_lift_out_posx", PICK_LIFT_OUT_POSX)
-    place_offset = _runtime_offset_xyz(runtime_cfg, "place_offset", [0.0, 0.0, 0.0])
-    retreat_offset = _runtime_offset_xyz(runtime_cfg, "retreat_offset", [-20.0, -50.0, 0.0])
+    service_ready_posj = _runtime_pose6_for_ingredient(
+        runtime_cfg,
+        ingredient_code=ingredient_code,
+        suffix="service_ready_posj",
+        fallback_pose6=SERVICE_READY_POSJ,
+    )
+    pour_start_cheers_posj = _runtime_pose6_for_ingredient(
+        runtime_cfg,
+        ingredient_code=ingredient_code,
+        suffix="pour_start_cheers_posj",
+        fallback_pose6=POUR_START_CHEERS_POSJ,
+    )
+    pour_contact_posj = _runtime_pose6_for_ingredient(
+        runtime_cfg,
+        ingredient_code=ingredient_code,
+        suffix="pour_contact_posj",
+        fallback_pose6=POUR_CONTACT_POSJ,
+    )
+    pour_horizontal_posj = _runtime_pose6_for_ingredient(
+        runtime_cfg,
+        ingredient_code=ingredient_code,
+        suffix="pour_horizontal_posj",
+        fallback_pose6=POUR_HORIZONTAL_POSJ,
+    )
+    pour_diagonal_posj = _runtime_pose6_for_ingredient(
+        runtime_cfg,
+        ingredient_code=ingredient_code,
+        suffix="pour_diagonal_posj",
+        fallback_pose6=POUR_DIAGONAL_POSJ,
+    )
+    pour_vertical_posj = _runtime_pose6_for_ingredient(
+        runtime_cfg,
+        ingredient_code=ingredient_code,
+        suffix="pour_vertical_posj",
+        fallback_pose6=POUR_VERTICAL_POSJ,
+    )
+    pick_approach_offset = _runtime_offset_xyz_for_ingredient(
+        runtime_cfg,
+        ingredient_code=ingredient_code,
+        suffix="pick_approach_offset",
+        fallback_xyz=[0.0, -50.0, 0.0],
+    )
+    pick_grasp_offset = _runtime_offset_xyz_for_ingredient(
+        runtime_cfg,
+        ingredient_code=ingredient_code,
+        suffix="pick_grasp_offset",
+        fallback_xyz=[0.0, 0.0, 0.0],
+    )
+    pick_lift_offset = _runtime_offset_xyz_for_ingredient(
+        runtime_cfg,
+        ingredient_code=ingredient_code,
+        suffix="pick_lift_offset",
+        fallback_xyz=[0.0, 0.0, 100.0],
+    )
+    pick_lift_out_posx = _runtime_pose6_for_ingredient(
+        runtime_cfg,
+        ingredient_code=ingredient_code,
+        suffix="pick_lift_out_posx",
+        fallback_pose6=PICK_LIFT_OUT_POSX,
+    )
+    place_offset = _runtime_offset_xyz_for_ingredient(
+        runtime_cfg,
+        ingredient_code=ingredient_code,
+        suffix="place_offset",
+        fallback_xyz=[0.0, 0.0, 0.0],
+    )
+    retreat_offset = _runtime_offset_xyz_for_ingredient(
+        runtime_cfg,
+        ingredient_code=ingredient_code,
+        suffix="retreat_offset",
+        fallback_xyz=[-20.0, -50.0, 0.0],
+    )
     _emit_sequence_log(api, f"[{ingredient_code}] 재료 시퀀스 시작(누적목표={target_volume_text})")
 
     # --- [1] PICK 병 집기 구역 ---
     _emit_sequence_log(api, f"[{ingredient_code}] [1] PICK 시작")
-    api.gripper(GRIPPER_OPEN_MM_DEFAULT, label=f"[{ingredient_code}] 그리퍼 열림")
+    api.gripper(gripper_open_mm, label=f"[{ingredient_code}] 그리퍼 열림")
     api.wait_sec(1.0, label=f"[{ingredient_code}] 그리퍼 열림 대기")
     api.movej_posj(service_ready_posj, label=f"[{ingredient_code}] 병 집기 준비")
 
@@ -1376,7 +1679,7 @@ def _append_ingredient_sequence(api: PlannerSequenceApi, row: dict, seq_index: i
     api.movel_posx(pick_grasp_posx, label=f"[{ingredient_code}] 병 파지(target_2)", vel=40.0, acc=40.0)
 
     #api.movel_posx(place_posx, label=f"[{ingredient_code}] 원위치 안착(target_2)", vel=40.0, acc=40.0)
-    api.gripper(GRIPPER_OPEN_MM_DEFAULT, label=f"[{ingredient_code}] 병 놓기")
+    api.gripper(gripper_open_mm, label=f"[{ingredient_code}] 병 놓기")
     api.wait_sec(2.0, label=f"[{ingredient_code}] 릴리즈 대기")
     #api.movel_posx(retreat_posx, label=f"[{ingredient_code}] 원위치 이탈(target_1)", vel=40.0, acc=40.0)
     api.movel_posx(pick_approach_posx, label=f"[{ingredient_code}] 병 접근(target_1)")
@@ -1397,8 +1700,8 @@ def _append_finish_sequence(
     _ = cup_detection
     _emit_sequence_log(api, "[glass] 완성컵 처리 시퀀스 시작")
     ''''
+    open_mm = _sanitize_gripper_open_mm(cup_gripper_open_mm, default_mm=GRIPPER_OPEN_MM_DEFAULT)
     close_mm = _sanitize_gripper_close_mm(cup_gripper_close_mm)
-    open_mm = _sanitize_gripper_close_mm(cup_gripper_open_mm, default_mm=GRIPPER_OPEN_MM_DEFAULT)
     cup_pick_ready_posj = _runtime_pose6(runtime_cfg, "cup_pick_ready_posj", CUP_PICK_READY_POSJ)
     cup_pick_approach_posx = _runtime_pose6(
         runtime_cfg,
@@ -1451,6 +1754,7 @@ def run_robot_action(context: dict, api: PlannerSequenceApi | None = None):
 
     detections = _extract_vision1_detections(context)
     gripper_close_map = _extract_menu_gripper_close_map(context)
+    gripper_open_map = _extract_menu_gripper_open_map(context)
     sequence_api = api if api is not None else PlannerSequenceApi()
     runtime_motion_cfg = _resolve_runtime_motion_config(context)
 
@@ -1458,6 +1762,7 @@ def run_robot_action(context: dict, api: PlannerSequenceApi | None = None):
         recipe_items,
         detections,
         gripper_close_map=gripper_close_map,
+        gripper_open_map=gripper_open_map,
     )
 
     cup_detection = None
@@ -1492,11 +1797,15 @@ def run_robot_action(context: dict, api: PlannerSequenceApi | None = None):
         _append_ingredient_sequence(sequence_api, row, seq_index=idx, runtime_cfg=runtime_motion_cfg)
 
     glass_gripper_close_mm = _sanitize_gripper_close_mm(gripper_close_map.get("glass", GRIPPER_CLOSE_MM_DEFAULT))
+    gripper_open_mm_default = _sanitize_gripper_open_mm(
+        gripper_open_map.get("glass", _runtime_gripper_open_mm(runtime_motion_cfg, fallback_mm=GRIPPER_OPEN_MM_DEFAULT)),
+        default_mm=GRIPPER_OPEN_MM_DEFAULT,
+    )
     _append_finish_sequence(
         sequence_api,
         cup_detection=cup_detection,
         cup_gripper_close_mm=glass_gripper_close_mm,
-        cup_gripper_open_mm=GRIPPER_OPEN_MM_DEFAULT,
+        cup_gripper_open_mm=gripper_open_mm_default,
         runtime_cfg=runtime_motion_cfg,
     )
 

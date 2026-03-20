@@ -252,6 +252,12 @@ VISION1_META_STALE_SEC = max(0.2, float(os.environ.get("BARTENDER_VISION1_META_S
 VISION2_META_STALE_SEC = max(0.2, float(os.environ.get("BARTENDER_VISION2_META_STALE_SEC", "2.0")))
 VISION1_META_WAIT_SEC = max(0.5, float(os.environ.get("BARTENDER_VISION1_META_WAIT_SEC", "5.0")))
 VISION2_META_WAIT_SEC = max(0.5, float(os.environ.get("BARTENDER_VISION2_META_WAIT_SEC", "5.0")))
+NATIVE_MOVESX_SETTLE_WAIT_SEC = max(
+    0.0, float(os.environ.get("BARTENDER_NATIVE_MOVESX_SETTLE_WAIT_SEC", "0.05"))
+)
+VISION_EXECUTOR_SPIN_TIMEOUT_SEC = max(
+    0.001, float(os.environ.get("BARTENDER_VISION_EXECUTOR_SPIN_TIMEOUT_SEC", "0.01"))
+)
 BARTENDER_SEQUENCE_API_HOST = str(os.environ.get("BARTENDER_SEQUENCE_API_HOST", "127.0.0.1") or "").strip() or "127.0.0.1"
 try:
     BARTENDER_SEQUENCE_API_PORT = int(os.environ.get("BARTENDER_SEQUENCE_API_PORT", "8765"))
@@ -793,7 +799,9 @@ class NativeRobotActionApi:
         ret = movesx(path, vel=eff_vel, acc=eff_acc)
         if self.robot_controller is not None and (not self.robot_controller._motion_ok(ret, f"movesx({label})")):
             raise RuntimeError(f"{label} 실패: movesx 반환값={ret}")
-        wait(0.5)
+        settle_wait = float(NATIVE_MOVESX_SETTLE_WAIT_SEC)
+        if settle_wait > 1e-6:
+            wait(settle_wait)
 
     def _exec_amovel_native(self, target6, label: str, vel=None, acc=None):
         from DSR_ROBOT2 import amovel
@@ -1789,7 +1797,7 @@ class RobotBackend:
                     continue
                 if not rclpy.ok():
                     break
-                self._vision_executor.spin_once(timeout_sec=0.05)
+                self._vision_executor.spin_once(timeout_sec=float(VISION_EXECUTOR_SPIN_TIMEOUT_SEC))
             except Exception as e:
                 msg = str(e)
                 if ("Destroyable" in msg) or ("destruction was requested" in msg):
@@ -1909,6 +1917,51 @@ class RobotBackend:
         if self._gripper_init_error:
             return False, f"그리퍼 초기화 실패: {self._gripper_init_error}"
         return False, "그리퍼 초기화 진행 중입니다. 잠시 후 다시 시도하세요."
+
+    def _ensure_gripper_ready_before_sequence(self, timeout_sec: float = 12.0):
+        if not self._is_real_gripper_required():
+            return True, "그리퍼 초기화 대상 아님"
+        if self.robot_controller is None:
+            return False, "로봇 컨트롤러가 없습니다."
+
+        # stale ready flag 방지: ready 이벤트는 켜져 있는데 실제 핸들이 없는 경우를 정리한다.
+        if self._gripper_ready_event.is_set():
+            with self.robot_controller._gripper_lock:
+                has_gripper = self.robot_controller.gripper is not None
+            if has_gripper:
+                return True, "그리퍼 초기화 완료 상태 확인"
+            self._gripper_ready_event.clear()
+
+        # 이전 실패/미완료 상태면 재초기화를 강제 등록한다.
+        enqueue_deadline = time.monotonic() + max(1.0, min(4.0, float(timeout_sec) * 0.4))
+        last_enqueue_msg = ""
+        while True:
+            ok_enqueue, msg_enqueue = self._retry_gripper_init_after_reset()
+            last_enqueue_msg = str(msg_enqueue or "").strip()
+            if ok_enqueue:
+                break
+            if ("큐 가득" in last_enqueue_msg) or ("현재 작업 중" in last_enqueue_msg):
+                if time.monotonic() >= enqueue_deadline:
+                    return False, f"그리퍼 재초기화 등록 실패: {last_enqueue_msg or '큐 대기 시간 초과'}"
+                time.sleep(0.1)
+                continue
+            return False, f"그리퍼 재초기화 실패: {last_enqueue_msg or '원인 미상'}"
+
+        # 워커(init_gripper)가 실제 완료될 때까지 성공/실패 이벤트를 기다린다.
+        wait_deadline = time.monotonic() + max(2.0, float(timeout_sec))
+        while time.monotonic() <= wait_deadline:
+            if self._gripper_ready_event.is_set():
+                with self.robot_controller._gripper_lock:
+                    has_gripper = self.robot_controller.gripper is not None
+                if has_gripper:
+                    return True, "그리퍼 초기화 성공 확인"
+                # 이벤트만 켜진 비정상 상태면 다시 대기
+                self._gripper_ready_event.clear()
+            if str(self._gripper_init_error or "").strip():
+                return False, f"그리퍼 초기화 실패: {self._gripper_init_error}"
+            time.sleep(0.05)
+
+        return False, "그리퍼 초기화 확인 시간 초과"
 
     def _is_robot_connection_ready_for_startup(self):
         if str(self._connection_mode).upper() != "REAL":
@@ -3808,6 +3861,40 @@ class RobotBackend:
             pass
         return {}
 
+    def _parse_menu_gripper_open_map(self, raw_map):
+        parsed = {}
+        if not isinstance(raw_map, dict):
+            return parsed
+        source = raw_map.get("menus", raw_map) if isinstance(raw_map.get("menus", None), dict) else raw_map
+        for key, payload in source.items():
+            code = str(key or "").strip().lower()
+            if not code or (not isinstance(payload, dict)):
+                continue
+            raw_value = payload.get("gripper_open_mm", payload.get("gripper_open_mm_default", None))
+            try:
+                value = float(raw_value)
+            except Exception:
+                continue
+            if (not math.isfinite(value)) or value < 0.0:
+                continue
+            parsed[code] = float(min(float(GRIPPER_RELEASE_DISTANCE_MM), float(value)))
+        return parsed
+
+    def _load_menu_gripper_open_mm(self, menu_offsets=None):
+        parsed_override = self._parse_menu_gripper_open_map(menu_offsets)
+        if parsed_override:
+            return parsed_override
+        try:
+            if os.path.isfile(MENU_OFFSET_CONFIG_PATH):
+                with open(MENU_OFFSET_CONFIG_PATH, "r", encoding="utf-8") as f:
+                    decoded = json.load(f)
+                parsed = self._parse_menu_gripper_open_map(decoded)
+                if parsed:
+                    return parsed
+        except Exception:
+            pass
+        return {}
+
     def _get_menu_xyz_offset(self, menu_code: str, offset_map: dict):
         code = str(menu_code or "").strip().lower()
         xyz = offset_map.get(code, (0.0, 0.0, 0.0))
@@ -4438,14 +4525,27 @@ class RobotBackend:
             )
         else:
             execute_enabled = bool(execute_enabled_override)
+
+        if bool(execute_enabled):
+            ok_gripper_ready, msg_gripper_ready = self._ensure_gripper_ready_before_sequence(timeout_sec=12.0)
+            if not ok_gripper_ready:
+                return False, str(msg_gripper_ready or "그리퍼 초기화 확인 실패")
+            if self.robot_controller is not None:
+                try:
+                    self.robot_controller._log_info(f"[로봇동작] {msg_gripper_ready}")
+                except Exception:
+                    pass
+
         offset_map = self._load_menu_xyz_offsets(menu_offsets=menu_offsets)
         gripper_close_map = self._load_menu_gripper_close_mm(menu_offsets=menu_offsets)
+        gripper_open_map = self._load_menu_gripper_open_mm(menu_offsets=menu_offsets)
         merged_menu_offsets = {"menus": {}}
-        for code in sorted(set(list(offset_map.keys()) + list(gripper_close_map.keys()))):
+        for code in sorted(set(list(offset_map.keys()) + list(gripper_close_map.keys()) + list(gripper_open_map.keys()))):
             ox, oy, oz = self._get_menu_xyz_offset(code, offset_map)
             merged_menu_offsets["menus"][str(code)] = {
                 "offset_xyz_mm": [float(ox), float(oy), float(oz)],
                 "gripper_close_mm": float(gripper_close_map.get(code, 41.0)),
+                "gripper_open_mm": float(gripper_open_map.get(code, GRIPPER_RELEASE_DISTANCE_MM)),
             }
         context["menu_offsets"] = merged_menu_offsets
         if self.robot_controller is not None:
@@ -4455,6 +4555,9 @@ class RobotBackend:
                 )
                 self.robot_controller._log_info(
                     f"[로봇동작] 적용 메뉴 파지(mm): {json.dumps(gripper_close_map, ensure_ascii=False)}"
+                )
+                self.robot_controller._log_info(
+                    f"[로봇동작] 적용 메뉴 오픈(mm): {json.dumps(gripper_open_map, ensure_ascii=False)}"
                 )
             except Exception:
                 pass

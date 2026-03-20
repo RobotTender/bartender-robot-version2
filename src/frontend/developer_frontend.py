@@ -53,6 +53,8 @@ from PyQt5.QtWidgets import (
     QFileDialog,
     QSizePolicy,
     QPlainTextEdit,
+    QTabWidget,
+    QWidget,
 )
 from PyQt5 import uic
 
@@ -269,6 +271,7 @@ ROBOT_ACTION_POSE_CONFIG_PATH = os.path.join(PARAM_DIR, "robot_action_pose_confi
 BARTENDER_MENU_LABELS = {
     "soju": "소주",
     "beer": "맥주",
+    "glass": "글라스잔",
     "somaek": "소맥",
 }
 BARTENDER_ROBOT_ACTION_TEST_MENU_ORDER = ("soju", "beer", "somaek")
@@ -283,22 +286,42 @@ BARTENDER_INGREDIENT_ALIASES = {
     "soju": {"soju", "소주"},
     "beer": {"beer", "맥주"},
 }
+ROBOT_ACTION_LIQUID_INGREDIENT_CODES = ("soju", "beer")
+ROBOT_ACTION_POSE_TAB_LABELS = {
+    "soju": "소주",
+    "beer": "맥주",
+    "glass": "글라스잔",
+}
 # 중요:
 # 이 기본값은 "UI 초기 fallback"이다.
 # 실제 사용 시에는 저장 파일(config/robot_action_pose_config.json) 값이 우선 로드된다.
 ROBOT_ACTION_POSE_DEFAULTS = {
     "poses": {
         "service_ready_posj": [28.0, -35.0, 100.0, 77.0, 63.0, -154.0],
+        "soju_service_ready_posj": [28.0, -35.0, 100.0, 77.0, 63.0, -154.0],
+        "beer_service_ready_posj": [28.0, -35.0, 100.0, 77.0, 63.0, -154.0],
         "pour_start_cheers_posj": [45.0, 0.0, 135.0, 90.0, -90.0, -135.0],
         "pour_contact_posj": [45.0, 43.58, 134.19, 90.01, -90.0, -62.23],
         "pour_horizontal_posj": [42.43, 21.08, 129.85, 87.75, -88.75, -29.06],
         "pour_diagonal_posj": [41.83, -5.0, 134.35, 87.99, -87.55, -0.61],
         "pour_vertical_posj": [38.76, -35.8, 146.74, 87.76, -84.18, 22.06],
+        "soju_pour_start_cheers_posj": [45.0, 0.0, 135.0, 90.0, -90.0, -135.0],
+        "soju_pour_contact_posj": [40.53, 40.36, 134.88, 85.56, -89.63, -64.75],
+        "soju_pour_horizontal_posj": [39.63, 18.89, 132.0, 85.3, -87.39, -29.02],
+        "soju_pour_diagonal_posj": [38.12, -7.68, 137.65, 85.57, -84.73, 0.16],
+        "soju_pour_vertical_posj": [36.16, -33.75, 145.95, 86.64, -81.83, 23.45],
+        "beer_pour_start_cheers_posj": [45.0, 0.0, 135.0, 90.0, -90.0, -135.0],
+        "beer_pour_contact_posj": [40.29, 26.46, 139.23, 85.45, -88.84, -74.27],
+        "beer_pour_horizontal_posj": [37.99, 7.03, 143.01, 83.92, -86.51, -29.79],
+        "beer_pour_diagonal_posj": [36.62, -6.09, 147.33, 83.45, -84.76, 11.53],
+        "beer_pour_vertical_posj": [36.16, -28.4, 150.63, 85.26, -82.54, 33.54],
         "cup_pick_ready_posj": [28.0, -35.0, 100.0, 77.0, 63.0, -154.0],
         "cup_pick_approach_posx": [430.0, -110.0, 300.0, 180.0, 0.0, 180.0],
         "cup_pick_pose_posx": [430.0, -110.0, 225.0, 180.0, 0.0, 180.0],
         "cup_pick_lift_posx": [430.0, -110.0, 330.0, 180.0, 0.0, 180.0],
         "pick_lift_out_posx": [99.555, 533.322, 701.878, 88.252, 89.415, -91.978],
+        "soju_pick_lift_out_posx": [99.555, 533.322, 701.878, 88.252, 89.415, -91.978],
+        "beer_pick_lift_out_posx": [99.555, 533.322, 701.878, 88.252, 89.415, -91.978],
         "cup_delivery_ready_posj": [28.0, -35.0, 100.0, 77.0, 63.0, -154.0],
         "cup_delivery_approach_posx": [520.0, -20.0, 320.0, 180.0, 0.0, 180.0],
         "cup_delivery_pose_posx": [520.0, -20.0, 235.0, 180.0, 0.0, 180.0],
@@ -309,6 +332,16 @@ ROBOT_ACTION_POSE_DEFAULTS = {
         "pick_lift_offset": [0.0, 0.0, 100.0],
         "place_offset": [0.0, 0.0, 0.0],
         "retreat_offset": [-20.0, -50.0, 0.0],
+        "soju_pick_approach_offset": [0.0, -50.0, 0.0],
+        "soju_pick_grasp_offset": [0.0, 0.0, 0.0],
+        "soju_pick_lift_offset": [0.0, 0.0, 100.0],
+        "soju_place_offset": [0.0, 0.0, 0.0],
+        "soju_retreat_offset": [-20.0, -50.0, 0.0],
+        "beer_pick_approach_offset": [0.0, -50.0, 0.0],
+        "beer_pick_grasp_offset": [0.0, 0.0, 0.0],
+        "beer_pick_lift_offset": [0.0, 0.0, 100.0],
+        "beer_place_offset": [0.0, 0.0, 0.0],
+        "beer_retreat_offset": [-20.0, -50.0, 0.0],
     },
 }
 ROBOT_ACTION_POSE_LEGACY_POSE_KEY_MAP = {
@@ -354,200 +387,410 @@ def _canonical_robot_action_offset_key(raw_key):
     return str(ROBOT_ACTION_POSE_LEGACY_OFFSET_KEY_MAP.get(key, key))
 
 
-ROBOT_ACTION_POSE_ROW_DEFS = [
-    {
-        "section": "[1] PICK/준비",
-        "type": "posj",
-        "config_group": "poses",
-        "config_key": "service_ready_posj",
-        "var_name": "SERVICE_READY_POSJ",
-        "label": "공통 준비자세",
-        "desc": "재료 집기/복귀/컵 전달 전 공통 준비 자세",
-    },
-    {
-        "section": "[1] PICK/준비",
-        "type": "vision_target",
-        "var_name": "resolve_detection_target(ingredient)",
-        "label": "재료 병 비전 타겟 계산",
-        "desc": "vision1 중심좌표/깊이에서 실시간 계산(보기 전용)",
-    },
-    {
-        "section": "[1] PICK/준비",
-        "type": "gripper_open_action",
-        "var_name": "GRIPPER_OPEN_MM_DEFAULT",
-        "label": "병 파지 전 그리퍼 오픈",
-        "desc": "클릭 시 그리퍼를 열어 병 파지를 준비합니다.",
-    },
-    {
-        "section": "[1] PICK",
-        "type": "vision_offset",
-        "config_group": "offsets_xyz_mm",
-        "config_key": "pick_approach_offset",
-        "var_name": "pick_approach_offset",
-        "label": "병 접근(target_1) 오프셋",
-        "desc": "비전 타겟 기준 상대 오프셋(mm)",
-    },
-    {
-        "section": "[1] PICK",
-        "type": "vision_offset",
-        "config_group": "offsets_xyz_mm",
-        "config_key": "pick_grasp_offset",
-        "var_name": "pick_grasp_offset",
-        "label": "병 파지(target_2) 오프셋",
-        "desc": "비전 타겟 기준 상대 오프셋(mm)",
-    },
-    {
-        "section": "[1] PICK",
-        "type": "gripper_close_action",
-        "var_name": "menu_gripper_close_mm(ingredient)",
-        "label": "병 파지(그리퍼 닫힘)",
-        "desc": "대상 재료를 선택해 메뉴별 파지 거리(mm)로 닫습니다.",
-    },
-    {
-        "section": "[1] PICK",
-        "type": "vision_offset",
-        "config_group": "offsets_xyz_mm",
-        "config_key": "pick_lift_offset",
-        "var_name": "pick_lift_offset",
-        "label": "병 파지 후 업(target_3) 오프셋",
-        "desc": "비전 타겟 기준 상대 오프셋(mm)",
-    },
-    {
-        "section": "[1] PICK",
-        "type": "posx",
-        "config_group": "poses",
-        "config_key": "pick_lift_out_posx",
-        "var_name": "pick_lift_out_posx",
-        "label": "병 파지 후 업 이탈(target_4) 절대좌표",
-        "desc": "절대 posx(mm/deg), 비전 오프셋 미사용",
-    },
-    {
-        "section": "[2] POUR",
-        "type": "posj",
-        "config_group": "poses",
-        "config_key": "pour_start_cheers_posj",
-        "var_name": "POUR_START_CHEERS_POSJ",
-        "label": "따르기 시작 자세",
-        "desc": "POUR 시작 전 조인트 자세",
-    },
-    {
-        "section": "[2] POUR",
-        "type": "posj",
-        "config_group": "poses",
-        "config_key": "pour_contact_posj",
-        "var_name": "POUR_CONTACT_POSJ",
-        "label": "따르기 contact",
-        "desc": "실시간 용량 피드백 단계 1",
-    },
-    {
-        "section": "[2] POUR",
-        "type": "posj",
-        "config_group": "poses",
-        "config_key": "pour_horizontal_posj",
-        "var_name": "POUR_HORIZONTAL_POSJ",
-        "label": "따르기 horizontal",
-        "desc": "실시간 용량 피드백 단계 2",
-    },
-    {
-        "section": "[2] POUR",
-        "type": "posj",
-        "config_group": "poses",
-        "config_key": "pour_diagonal_posj",
-        "var_name": "POUR_DIAGONAL_POSJ",
-        "label": "따르기 diagonal",
-        "desc": "실시간 용량 피드백 단계 3",
-    },
-    {
-        "section": "[2] POUR",
-        "type": "posj",
-        "config_group": "poses",
-        "config_key": "pour_vertical_posj",
-        "var_name": "POUR_VERTICAL_POSJ",
-        "label": "따르기 vertical",
-        "desc": "실시간 용량 피드백 단계 4",
-    },
-    {
-        "section": "[3] RETURN",
-        "type": "vision_offset",
-        "config_group": "offsets_xyz_mm",
-        "config_key": "place_offset",
-        "var_name": "place_offset",
-        "label": "병 원위치 안착(target_2) 오프셋",
-        "desc": "비전 타겟 기준 상대 오프셋(mm)",
-    },
-    {
-        "section": "[3] RETURN",
-        "type": "vision_offset",
-        "config_group": "offsets_xyz_mm",
-        "config_key": "retreat_offset",
-        "var_name": "retreat_offset",
-        "label": "병 원위치 이탈(target_1) 오프셋",
-        "desc": "비전 타겟 기준 상대 오프셋(mm)",
-    },
-    {
-        "section": "[4] CUP PICK",
-        "type": "posj",
-        "config_group": "poses",
-        "config_key": "cup_pick_ready_posj",
-        "var_name": "CUP_PICK_READY_POSJ",
-        "label": "컵 집기 준비자세",
-        "desc": "컵 집기 전 준비 posj",
-    },
-    {
-        "section": "[4] CUP PICK",
-        "type": "posx",
-        "config_group": "poses",
-        "config_key": "cup_pick_approach_posx",
-        "var_name": "CUP_PICK_APPROACH_POSX",
-        "label": "컵 집기 접근(고정)",
-        "desc": "컵 집기 고정 posx",
-    },
-    {
-        "section": "[4] CUP PICK",
-        "type": "posx",
-        "config_group": "poses",
-        "config_key": "cup_pick_pose_posx",
-        "var_name": "CUP_PICK_POSE_POSX",
-        "label": "컵 집기 위치(고정)",
-        "desc": "컵 집기 고정 posx",
-    },
-    {
-        "section": "[4] CUP PICK",
-        "type": "posx",
-        "config_group": "poses",
-        "config_key": "cup_pick_lift_posx",
-        "var_name": "CUP_PICK_LIFT_POSX",
-        "label": "컵 리프트(고정)",
-        "desc": "컵 집기 후 고정 리프트 posx",
-    },
-    {
-        "section": "[5] DELIVERY",
-        "type": "posj",
-        "config_group": "poses",
-        "config_key": "cup_delivery_ready_posj",
-        "var_name": "CUP_DELIVERY_READY_POSJ",
-        "label": "전달 준비자세",
-        "desc": "컵 전달 전 준비 posj",
-    },
-    {
-        "section": "[5] DELIVERY",
-        "type": "posx",
-        "config_group": "poses",
-        "config_key": "cup_delivery_approach_posx",
-        "var_name": "CUP_DELIVERY_APPROACH_POSX",
-        "label": "전달 위치 접근",
-        "desc": "완성컵 전달 전 접근 posx",
-    },
-    {
-        "section": "[5] DELIVERY",
-        "type": "posx",
-        "config_group": "poses",
-        "config_key": "cup_delivery_pose_posx",
-        "var_name": "CUP_DELIVERY_POSE_POSX",
-        "label": "전달 위치 안착",
-        "desc": "완성컵 전달 안착 posx",
-    },
+def _build_liquid_robot_action_pose_rows(ingredient_code: str, ingredient_label: str):
+    code = str(ingredient_code or "").strip().lower()
+    label = str(ingredient_label or code)
+    prefix_upper = str(code).upper()
+    return [
+        {
+            "tab": code,
+            "section": "[0] 재료보정",
+            "type": "menu_offset_xyz",
+            "ingredient_code": code,
+            "var_name": f"{code}_menu_offset_xyz_mm",
+            "label": f"{label} 비전 XYZ 오프셋",
+            "desc": "비전 기준좌표에 더하는 재료별 XYZ 오프셋(mm)",
+        },
+        {
+            "tab": code,
+            "section": "[0] 재료보정",
+            "type": "menu_gripper_close_mm",
+            "ingredient_code": code,
+            "var_name": f"{code}_gripper_close_mm",
+            "label": f"{label} 파지 거리(mm)",
+            "desc": "재료 파지 시 사용할 그리퍼 닫힘 거리(mm)",
+        },
+        {
+            "tab": code,
+            "section": "[0] 재료보정",
+            "type": "menu_gripper_open_mm",
+            "ingredient_code": code,
+            "var_name": f"{code}_gripper_open_mm",
+            "label": f"{label} 오픈 거리(mm)",
+            "desc": "재료 파지 전 사용할 그리퍼 오픈 거리(mm)",
+        },
+        {
+            "tab": code,
+            "section": "[1] PICK/준비",
+            "type": "posj",
+            "config_group": "poses",
+            "config_key": f"{code}_service_ready_posj",
+            "var_name": f"{prefix_upper}_SERVICE_READY_POSJ",
+            "label": f"{label} 병 집기 준비(service_ready)",
+            "desc": "위치참조",
+            "editable": False,
+            "reference_only": True,
+        },
+        {
+            "tab": code,
+            "section": "[1] PICK/준비",
+            "type": "vision_target",
+            "ingredient_code": code,
+            "var_name": f"resolve_detection_target({code})",
+            "label": f"{label} 비전 타겟 계산",
+            "desc": "vision1 중심좌표/깊이에서 실시간 계산(보기 전용)",
+        },
+        {
+            "tab": code,
+            "section": "[1] PICK/준비",
+            "type": "gripper_open_action",
+            "ingredient_code": code,
+            "var_name": f"{code}_gripper_open_before_pick",
+            "label": "병 파지 전 그리퍼 오픈",
+            "desc": "위치참조",
+            "editable": False,
+            "reference_only": True,
+        },
+        {
+            "tab": code,
+            "section": "[1] PICK",
+            "type": "vision_offset",
+            "ingredient_code": code,
+            "config_group": "offsets_xyz_mm",
+            "config_key": f"{code}_pick_approach_offset",
+            "var_name": f"{code}_pick_approach_offset",
+            "label": "병 접근(target_1) 오프셋",
+            "desc": "비전 타겟 기준 상대 오프셋(mm)",
+        },
+        {
+            "tab": code,
+            "section": "[1] PICK",
+            "type": "vision_offset",
+            "ingredient_code": code,
+            "config_group": "offsets_xyz_mm",
+            "config_key": f"{code}_pick_grasp_offset",
+            "var_name": f"{code}_pick_grasp_offset",
+            "label": "병 파지(target_2) 오프셋",
+            "desc": "비전 타겟 기준 상대 오프셋(mm)",
+        },
+        {
+            "tab": code,
+            "section": "[1] PICK",
+            "type": "gripper_close_action",
+            "ingredient_code": code,
+            "var_name": f"{code}_gripper_close_pick",
+            "label": "병 파지(그리퍼 닫힘)",
+            "desc": "위치참조",
+            "editable": False,
+            "reference_only": True,
+        },
+        {
+            "tab": code,
+            "section": "[1] PICK",
+            "type": "vision_offset",
+            "ingredient_code": code,
+            "config_group": "offsets_xyz_mm",
+            "config_key": f"{code}_pick_lift_offset",
+            "var_name": f"{code}_pick_lift_offset",
+            "label": "병 파지 후 업(target_3) 오프셋",
+            "desc": "비전 타겟 기준 상대 오프셋(mm)",
+        },
+        {
+            "tab": code,
+            "section": "[1] PICK",
+            "type": "posx",
+            "config_group": "poses",
+            "config_key": f"{code}_pick_lift_out_posx",
+            "var_name": f"{code}_pick_lift_out_posx",
+            "label": "병 파지 후 업 이탈(target_4) 절대좌표",
+            "desc": "절대 posx(mm/deg), 비전 오프셋 미사용",
+        },
+        {
+            "tab": code,
+            "section": "[2] POUR",
+            "type": "posj",
+            "config_group": "poses",
+            "config_key": f"{code}_pour_start_cheers_posj",
+            "var_name": f"{prefix_upper}_POUR_START_CHEERS_POSJ",
+            "label": "따르기 시작 자세",
+            "desc": "POUR 시작 전 조인트 자세",
+        },
+        {
+            "tab": code,
+            "section": "[2] POUR",
+            "type": "posj",
+            "config_group": "poses",
+            "config_key": f"{code}_pour_contact_posj",
+            "var_name": f"{prefix_upper}_POUR_CONTACT_POSJ",
+            "label": "따르기 contact",
+            "desc": "실시간 용량 피드백 단계 1",
+        },
+        {
+            "tab": code,
+            "section": "[2] POUR",
+            "type": "posj",
+            "config_group": "poses",
+            "config_key": f"{code}_pour_horizontal_posj",
+            "var_name": f"{prefix_upper}_POUR_HORIZONTAL_POSJ",
+            "label": "따르기 horizontal",
+            "desc": "실시간 용량 피드백 단계 2",
+        },
+        {
+            "tab": code,
+            "section": "[2] POUR",
+            "type": "posj",
+            "config_group": "poses",
+            "config_key": f"{code}_pour_diagonal_posj",
+            "var_name": f"{prefix_upper}_POUR_DIAGONAL_POSJ",
+            "label": "따르기 diagonal",
+            "desc": "실시간 용량 피드백 단계 3",
+        },
+        {
+            "tab": code,
+            "section": "[2] POUR",
+            "type": "posj",
+            "config_group": "poses",
+            "config_key": f"{code}_pour_vertical_posj",
+            "var_name": f"{prefix_upper}_POUR_VERTICAL_POSJ",
+            "label": "따르기 vertical",
+            "desc": "실시간 용량 피드백 단계 4",
+        },
+        {
+            "tab": code,
+            "section": "[3] RETURN(역순)",
+            "type": "posj",
+            "config_group": "poses",
+            "config_key": f"{code}_service_ready_posj",
+            "var_name": f"{prefix_upper}_SERVICE_READY_POSJ",
+            "label": "원위치 복귀 준비(service_ready)",
+            "desc": "위치참조",
+            "editable": False,
+            "reference_only": True,
+        },
+        {
+            "tab": code,
+            "section": "[3] RETURN(역순)",
+            "type": "posx",
+            "config_group": "poses",
+            "config_key": f"{code}_pick_lift_out_posx",
+            "var_name": f"{code}_pick_lift_out_posx(return_ref)",
+            "label": "복귀 중간(target_4) 절대좌표",
+            "desc": "위치참조",
+            "editable": False,
+            "reference_only": True,
+        },
+        {
+            "tab": code,
+            "section": "[3] RETURN(역순)",
+            "type": "vision_offset",
+            "ingredient_code": code,
+            "config_group": "offsets_xyz_mm",
+            "config_key": f"{code}_pick_lift_offset",
+            "var_name": f"{code}_pick_lift_offset(return_ref)",
+            "label": "복귀 중간(target_3) 오프셋",
+            "desc": "위치참조",
+            "editable": False,
+            "reference_only": True,
+        },
+        {
+            "tab": code,
+            "section": "[3] RETURN(역순)",
+            "type": "vision_offset",
+            "ingredient_code": code,
+            "config_group": "offsets_xyz_mm",
+            "config_key": f"{code}_pick_grasp_offset",
+            "var_name": f"{code}_pick_grasp_offset(return_ref)",
+            "label": "병 원위치 안착(target_2) 오프셋",
+            "desc": "위치참조",
+            "editable": False,
+            "reference_only": True,
+        },
+        {
+            "tab": code,
+            "section": "[3] RETURN(역순)",
+            "type": "gripper_open_action",
+            "ingredient_code": code,
+            "var_name": f"{code}_gripper_open_return",
+            "label": "병 놓기(그리퍼 오픈)",
+            "desc": "위치참조",
+            "editable": False,
+            "reference_only": True,
+        },
+        {
+            "tab": code,
+            "section": "[3] RETURN(역순)",
+            "type": "vision_offset",
+            "ingredient_code": code,
+            "config_group": "offsets_xyz_mm",
+            "config_key": f"{code}_pick_approach_offset",
+            "var_name": f"{code}_pick_approach_offset(return_ref)",
+            "label": "병 원위치 이탈(target_1) 오프셋",
+            "desc": "위치참조",
+            "editable": False,
+            "reference_only": True,
+        },
+        {
+            "tab": code,
+            "section": "[3] RETURN(역순)",
+            "type": "posj",
+            "config_group": "poses",
+            "config_key": f"{code}_service_ready_posj",
+            "var_name": f"{prefix_upper}_SERVICE_READY_POSJ",
+            "label": "다음 재료 준비(service_ready)",
+            "desc": "위치참조",
+            "editable": False,
+            "reference_only": True,
+        },
+    ]
+
+
+def _build_glass_robot_action_pose_rows():
+    code = "glass"
+    return [
+        {
+            "tab": "glass",
+            "section": "[0] 재료보정",
+            "type": "menu_gripper_close_mm",
+            "ingredient_code": code,
+            "var_name": "glass_gripper_close_mm",
+            "label": "글라스잔 파지 거리(mm)",
+            "desc": "완성컵 파지 시 사용할 그리퍼 닫힘 거리(mm)",
+        },
+        {
+            "tab": "glass",
+            "section": "[0] 재료보정",
+            "type": "menu_gripper_open_mm",
+            "ingredient_code": code,
+            "var_name": "glass_gripper_open_mm",
+            "label": "글라스잔 오픈 거리(mm)",
+            "desc": "완성컵 파지 전 사용할 그리퍼 오픈 거리(mm)",
+        },
+        {
+            "tab": "glass",
+            "section": "[4] CUP PICK",
+            "type": "gripper_open_action",
+            "ingredient_code": code,
+            "var_name": "glass_gripper_open_pick",
+            "label": "컵 집기 전 그리퍼 오픈",
+            "desc": "위치참조",
+            "editable": False,
+            "reference_only": True,
+        },
+        {
+            "tab": "glass",
+            "section": "[4] CUP PICK",
+            "type": "posj",
+            "config_group": "poses",
+            "config_key": "cup_pick_ready_posj",
+            "var_name": "CUP_PICK_READY_POSJ",
+            "label": "컵 집기 준비자세",
+            "desc": "컵 집기 전 준비 posj",
+        },
+        {
+            "tab": "glass",
+            "section": "[4] CUP PICK",
+            "type": "posx",
+            "config_group": "poses",
+            "config_key": "cup_pick_approach_posx",
+            "var_name": "CUP_PICK_APPROACH_POSX",
+            "label": "컵 집기 접근(고정)",
+            "desc": "컵 집기 고정 posx",
+        },
+        {
+            "tab": "glass",
+            "section": "[4] CUP PICK",
+            "type": "posx",
+            "config_group": "poses",
+            "config_key": "cup_pick_pose_posx",
+            "var_name": "CUP_PICK_POSE_POSX",
+            "label": "컵 집기 위치(고정)",
+            "desc": "컵 집기 고정 posx",
+        },
+        {
+            "tab": "glass",
+            "section": "[4] CUP PICK",
+            "type": "gripper_close_action",
+            "ingredient_code": code,
+            "var_name": "glass_gripper_close_pick",
+            "label": "완성컵 파지(그리퍼 닫힘)",
+            "desc": "위치참조",
+            "editable": False,
+            "reference_only": True,
+        },
+        {
+            "tab": "glass",
+            "section": "[4] CUP PICK",
+            "type": "posx",
+            "config_group": "poses",
+            "config_key": "cup_pick_lift_posx",
+            "var_name": "CUP_PICK_LIFT_POSX",
+            "label": "컵 리프트(고정)",
+            "desc": "컵 집기 후 고정 리프트 posx",
+        },
+        {
+            "tab": "glass",
+            "section": "[5] DELIVERY",
+            "type": "posj",
+            "config_group": "poses",
+            "config_key": "cup_delivery_ready_posj",
+            "var_name": "CUP_DELIVERY_READY_POSJ",
+            "label": "전달 준비자세",
+            "desc": "컵 전달 전 준비 posj",
+        },
+        {
+            "tab": "glass",
+            "section": "[5] DELIVERY",
+            "type": "posx",
+            "config_group": "poses",
+            "config_key": "cup_delivery_approach_posx",
+            "var_name": "CUP_DELIVERY_APPROACH_POSX",
+            "label": "전달 위치 접근",
+            "desc": "완성컵 전달 전 접근 posx",
+        },
+        {
+            "tab": "glass",
+            "section": "[5] DELIVERY",
+            "type": "posx",
+            "config_group": "poses",
+            "config_key": "cup_delivery_pose_posx",
+            "var_name": "CUP_DELIVERY_POSE_POSX",
+            "label": "전달 위치 안착",
+            "desc": "완성컵 전달 안착 posx",
+        },
+        {
+            "tab": "glass",
+            "section": "[5] DELIVERY",
+            "type": "gripper_open_action",
+            "ingredient_code": code,
+            "var_name": "glass_gripper_open_release",
+            "label": "완성컵 릴리즈(그리퍼 오픈)",
+            "desc": "위치참조",
+            "editable": False,
+            "reference_only": True,
+        },
+        {
+            "tab": "glass",
+            "section": "[5] DELIVERY",
+            "type": "posx",
+            "config_group": "poses",
+            "config_key": "cup_delivery_approach_posx",
+            "var_name": "CUP_DELIVERY_APPROACH_POSX",
+            "label": "전달 위치 이탈(공용)",
+            "desc": "전달 후 안전 이탈(전달 접근 posx 공용)",
+        },
+    ]
+
+
+ROBOT_ACTION_POSE_TABS = [
+    ("soju", ROBOT_ACTION_POSE_TAB_LABELS.get("soju", "소주")),
+    ("beer", ROBOT_ACTION_POSE_TAB_LABELS.get("beer", "맥주")),
+    ("glass", ROBOT_ACTION_POSE_TAB_LABELS.get("glass", "글라스잔")),
 ]
+ROBOT_ACTION_POSE_ROW_DEFS = (
+    _build_liquid_robot_action_pose_rows("soju", ROBOT_ACTION_POSE_TAB_LABELS.get("soju", "소주"))
+    + _build_liquid_robot_action_pose_rows("beer", ROBOT_ACTION_POSE_TAB_LABELS.get("beer", "맥주"))
+    + _build_glass_robot_action_pose_rows()
+)
 CALIB_DIR = os.path.join(PARAM_DIR, "calibration")
 CALIB_ROBOT_DIR = CALIB_DIR
 CALIB_ROTMAT_DIR = CALIB_DIR
@@ -991,8 +1234,12 @@ class App(QMainWindow, form):
         self._bartender_status_lock = False
         self._menu_xyz_offsets_by_code = {}
         self._menu_gripper_close_mm_by_code = {}
+        self._menu_gripper_open_mm_by_code = {}
         self._menu_label_by_code = dict(BARTENDER_MENU_LABELS)
         self._robot_action_pose_config = {}
+        self._robot_action_cached_vision_target_payload_by_code = {}
+        self._robot_action_cached_vision_target_last_code = ""
+        self._robot_action_cached_vision_target_last_label = ""
         self._motion_speed_percent = int(DEFAULT_MOTION_SPEED_PERCENT)
         self._motion_speed_slider = None
         self._motion_speed_title_label = None
@@ -1573,15 +1820,7 @@ class App(QMainWindow, form):
         )
         self._bartender_settings_box = settings_box
 
-        offset_btn = QPushButton("술 종류별 XYZ 오프셋 설정", settings_box)
-        offset_btn.setStyleSheet(
-            "QPushButton { background: #f1f5f9; color: #1f2937; border: 1px solid #cbd5e1; border-radius: 4px; font-size: 8.8pt; font-weight: 700; }"
-            "QPushButton:hover { background: #e2e8f0; }"
-        )
-        offset_btn.clicked.connect(self._open_menu_xyz_offset_dialog)
-        self._bartender_offset_button = offset_btn
-
-        pose_btn = QPushButton("로봇 액션 포지션 설정", settings_box)
+        pose_btn = QPushButton("로봇 액션 포지션/재료 오프셋 설정", settings_box)
         pose_btn.setStyleSheet(
             "QPushButton { background: #eef2ff; color: #1f2937; border: 1px solid #c7d2fe; border-radius: 4px; font-size: 8.8pt; font-weight: 700; }"
             "QPushButton:hover { background: #e0e7ff; }"
@@ -1807,6 +2046,7 @@ class App(QMainWindow, form):
                 "label": str(menu_label),
                 "offset_xyz_mm": [0.0, 0.0, 0.0],
                 "gripper_close_mm": 41.0,
+                "gripper_open_mm": float(ROBOT_ACTION_GRIPPER_OPEN_MM_DEFAULT),
             }
         return offsets
 
@@ -1838,6 +2078,10 @@ class App(QMainWindow, form):
             code: float(payload.get("gripper_close_mm", 41.0))
             for code, payload in defaults.items()
         }
+        gripper_open_map = {
+            code: float(payload.get("gripper_open_mm", ROBOT_ACTION_GRIPPER_OPEN_MM_DEFAULT))
+            for code, payload in defaults.items()
+        }
 
         try:
             if os.path.isfile(MENU_OFFSET_CONFIG_PATH):
@@ -1855,10 +2099,15 @@ class App(QMainWindow, form):
                             label = str(raw_payload.get("label", labels.get(code, code)) or code)
                             xyz = raw_payload.get("offset_xyz_mm", [0.0, 0.0, 0.0])
                             gripper_close_mm = raw_payload.get("gripper_close_mm", gripper_map.get(code, 41.0))
+                            gripper_open_mm = raw_payload.get(
+                                "gripper_open_mm",
+                                raw_payload.get("gripper_open_mm_default", gripper_open_map.get(code, ROBOT_ACTION_GRIPPER_OPEN_MM_DEFAULT)),
+                            )
                         else:
                             label = labels.get(code, code)
                             xyz = raw_payload
                             gripper_close_mm = gripper_map.get(code, 41.0)
+                            gripper_open_mm = gripper_open_map.get(code, ROBOT_ACTION_GRIPPER_OPEN_MM_DEFAULT)
                         try:
                             x = float(xyz[0]) if isinstance(xyz, (list, tuple)) and len(xyz) >= 1 else 0.0
                             y = float(xyz[1]) if isinstance(xyz, (list, tuple)) and len(xyz) >= 2 else 0.0
@@ -1871,16 +2120,25 @@ class App(QMainWindow, form):
                                 grip_v = float(gripper_map.get(code, 41.0))
                         except Exception:
                             grip_v = float(gripper_map.get(code, 41.0))
+                        try:
+                            grip_open_v = float(gripper_open_mm)
+                            if (not np.isfinite(grip_open_v)) or grip_open_v < 0.0:
+                                grip_open_v = float(gripper_open_map.get(code, ROBOT_ACTION_GRIPPER_OPEN_MM_DEFAULT))
+                            grip_open_v = min(float(ROBOT_ACTION_GRIPPER_OPEN_MM_DEFAULT), float(grip_open_v))
+                        except Exception:
+                            grip_open_v = float(gripper_open_map.get(code, ROBOT_ACTION_GRIPPER_OPEN_MM_DEFAULT))
                         if not np.isfinite(np.asarray([x, y, z], dtype=np.float64)).all():
                             x, y, z = 0.0, 0.0, 0.0
                         labels[code] = label
                         offsets[code] = (float(x), float(y), float(z))
                         gripper_map[code] = float(grip_v)
+                        gripper_open_map[code] = float(grip_open_v)
         except Exception as exc:
             self._append_voice_order_log(f"오프셋 설정 로드 실패: {exc}", level="warning")
 
         self._menu_xyz_offsets_by_code = dict(offsets)
         self._menu_gripper_close_mm_by_code = dict(gripper_map)
+        self._menu_gripper_open_mm_by_code = dict(gripper_open_map)
         self._menu_label_by_code = dict(labels)
         return dict(self._menu_xyz_offsets_by_code)
 
@@ -1895,10 +2153,18 @@ class App(QMainWindow, form):
                     grip_mm = 41.0
             except Exception:
                 grip_mm = 41.0
+            try:
+                grip_open_mm = float(self._menu_gripper_open_mm_by_code.get(code, ROBOT_ACTION_GRIPPER_OPEN_MM_DEFAULT))
+                if (not np.isfinite(grip_open_mm)) or grip_open_mm < 0.0:
+                    grip_open_mm = float(ROBOT_ACTION_GRIPPER_OPEN_MM_DEFAULT)
+                grip_open_mm = min(float(ROBOT_ACTION_GRIPPER_OPEN_MM_DEFAULT), float(grip_open_mm))
+            except Exception:
+                grip_open_mm = float(ROBOT_ACTION_GRIPPER_OPEN_MM_DEFAULT)
             payload["menus"][str(code)] = {
                 "label": label,
                 "offset_xyz_mm": [float(xyz[0]), float(xyz[1]), float(xyz[2])],
                 "gripper_close_mm": float(grip_mm),
+                "gripper_open_mm": float(grip_open_mm),
             }
         try:
             os.makedirs(os.path.dirname(MENU_OFFSET_CONFIG_PATH), exist_ok=True)
@@ -1939,6 +2205,16 @@ class App(QMainWindow, form):
         except Exception:
             return 41.0
 
+    def _get_menu_gripper_open_mm(self, menu_code: str):
+        code = str(menu_code or "").strip()
+        try:
+            value = float(self._menu_gripper_open_mm_by_code.get(code, ROBOT_ACTION_GRIPPER_OPEN_MM_DEFAULT))
+            if (not np.isfinite(value)) or value < 0.0:
+                return float(ROBOT_ACTION_GRIPPER_OPEN_MM_DEFAULT)
+            return min(float(ROBOT_ACTION_GRIPPER_OPEN_MM_DEFAULT), float(value))
+        except Exception:
+            return float(ROBOT_ACTION_GRIPPER_OPEN_MM_DEFAULT)
+
     def _build_menu_offset_payload(self):
         payload = {"menus": {}}
         for code in self._menu_codes_for_offset_ui():
@@ -1947,6 +2223,7 @@ class App(QMainWindow, form):
                 "label": str(self._menu_label_by_code.get(code, code) or code),
                 "offset_xyz_mm": [float(xyz[0]), float(xyz[1]), float(xyz[2])],
                 "gripper_close_mm": float(self._get_menu_gripper_close_mm(code)),
+                "gripper_open_mm": float(self._get_menu_gripper_open_mm(code)),
             }
         return payload
 
@@ -1962,7 +2239,7 @@ class App(QMainWindow, form):
 
         info = QLabel(
             "비전 좌표를 로봇 좌표계로 변환한 기준값에 메뉴별 XYZ 오프셋(mm)을 더하고,\n"
-            "병 파지 단계에서 사용할 그리퍼 거리(mm)도 메뉴별로 지정합니다.",
+            "병 파지 단계에서 사용할 그리퍼 파지/오픈 거리(mm)도 메뉴별로 지정합니다.",
             dialog,
         )
         info.setWordWrap(True)
@@ -1971,14 +2248,14 @@ class App(QMainWindow, form):
 
         table = QTableWidget(dialog)
         codes = self._menu_codes_for_offset_ui()
-        table.setColumnCount(6)
+        table.setColumnCount(7)
         table.setRowCount(len(codes))
-        table.setHorizontalHeaderLabels(["메뉴코드", "메뉴명", "X(mm)", "Y(mm)", "Z(mm)", "파지(mm)"])
+        table.setHorizontalHeaderLabels(["메뉴코드", "메뉴명", "X(mm)", "Y(mm)", "Z(mm)", "파지(mm)", "오픈(mm)"])
         table.verticalHeader().setVisible(False)
         table.setSelectionMode(QTableWidget.NoSelection)
         table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
         table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
-        for col in (2, 3, 4, 5):
+        for col in (2, 3, 4, 5, 6):
             table.horizontalHeader().setSectionResizeMode(col, QHeaderView.ResizeToContents)
 
         for row, code in enumerate(codes):
@@ -1995,6 +2272,7 @@ class App(QMainWindow, form):
             for col, value in enumerate(xyz, start=2):
                 table.setItem(row, col, QTableWidgetItem(f"{float(value):.2f}"))
             table.setItem(row, 5, QTableWidgetItem(f"{float(self._get_menu_gripper_close_mm(code)):.2f}"))
+            table.setItem(row, 6, QTableWidgetItem(f"{float(self._get_menu_gripper_open_mm(code)):.2f}"))
 
         root.addWidget(table, 1)
 
@@ -2018,11 +2296,18 @@ class App(QMainWindow, form):
                     table.setItem(r, 5, grip_item)
                 else:
                     grip_item.setText("41.00")
+                grip_open_item = table.item(r, 6)
+                if grip_open_item is None:
+                    grip_open_item = QTableWidgetItem(f"{float(ROBOT_ACTION_GRIPPER_OPEN_MM_DEFAULT):.2f}")
+                    table.setItem(r, 6, grip_open_item)
+                else:
+                    grip_open_item.setText(f"{float(ROBOT_ACTION_GRIPPER_OPEN_MM_DEFAULT):.2f}")
 
         def _on_save():
             new_offsets = {}
             new_labels = {}
             new_gripper = {}
+            new_gripper_open = {}
             for r in range(table.rowCount()):
                 code_item = table.item(r, 0)
                 code = str(code_item.text() if code_item is not None else "").strip()
@@ -2053,9 +2338,23 @@ class App(QMainWindow, form):
                 if (not np.isfinite(grip_v)) or grip_v < 0.0:
                     QMessageBox.warning(self, "오프셋 설정", f"{code}의 파지(mm) 값이 유효하지 않습니다: {grip_txt}")
                     return
+                grip_open_item = table.item(r, 6)
+                grip_open_txt = str(
+                    grip_open_item.text() if grip_open_item is not None else f"{float(ROBOT_ACTION_GRIPPER_OPEN_MM_DEFAULT):.2f}"
+                ).strip() or str(float(ROBOT_ACTION_GRIPPER_OPEN_MM_DEFAULT))
+                try:
+                    grip_open_v = float(grip_open_txt)
+                except Exception:
+                    QMessageBox.warning(self, "오프셋 설정", f"{code}의 오픈(mm) 값이 숫자가 아닙니다: {grip_open_txt}")
+                    return
+                if (not np.isfinite(grip_open_v)) or grip_open_v < 0.0:
+                    QMessageBox.warning(self, "오프셋 설정", f"{code}의 오픈(mm) 값이 유효하지 않습니다: {grip_open_txt}")
+                    return
+                grip_open_v = min(float(ROBOT_ACTION_GRIPPER_OPEN_MM_DEFAULT), float(grip_open_v))
                 new_labels[code] = label
                 new_offsets[code] = (vals[0], vals[1], vals[2])
                 new_gripper[code] = float(grip_v)
+                new_gripper_open[code] = float(grip_open_v)
 
             preserved_labels = {}
             for code, label in self._menu_label_by_code.items():
@@ -2065,12 +2364,13 @@ class App(QMainWindow, form):
             self._menu_label_by_code.update(preserved_labels)
             self._menu_xyz_offsets_by_code = dict(new_offsets)
             self._menu_gripper_close_mm_by_code = dict(new_gripper)
+            self._menu_gripper_open_mm_by_code = dict(new_gripper_open)
             ok, msg = self._save_menu_xyz_offsets()
             self._refresh_menu_xyz_offset_button_text()
             if not ok:
                 QMessageBox.warning(self, "오프셋 설정", msg)
                 return
-            self._append_voice_order_log(f"메뉴별 XYZ/파지(mm) 설정 저장: {MENU_OFFSET_CONFIG_PATH}")
+            self._append_voice_order_log(f"메뉴별 XYZ/파지/오픈(mm) 설정 저장: {MENU_OFFSET_CONFIG_PATH}")
             dialog.accept()
 
         reset_btn.clicked.connect(_on_reset)
@@ -2080,7 +2380,11 @@ class App(QMainWindow, form):
         dialog.exec_()
 
     def _clone_default_robot_action_pose_config(self):
-        payload = {"poses": {}, "offsets_xyz_mm": {}}
+        payload = {
+            "poses": {},
+            "offsets_xyz_mm": {},
+            "gripper": {"open_mm_default": float(ROBOT_ACTION_GRIPPER_OPEN_MM_DEFAULT)},
+        }
         poses = ROBOT_ACTION_POSE_DEFAULTS.get("poses", {})
         offsets = ROBOT_ACTION_POSE_DEFAULTS.get("offsets_xyz_mm", {})
         if isinstance(poses, dict):
@@ -2102,6 +2406,27 @@ class App(QMainWindow, form):
                     vals = vals + [0.0] * (3 - len(vals))
                 payload["offsets_xyz_mm"][str(key)] = vals[:3]
         return payload
+
+    def _sanitize_robot_action_gripper_open_mm(self, value, default_mm: float = ROBOT_ACTION_GRIPPER_OPEN_MM_DEFAULT):
+        try:
+            v = float(value)
+        except Exception:
+            v = float(default_mm)
+        if not np.isfinite(v):
+            v = float(default_mm)
+        return max(0.0, min(float(ROBOT_ACTION_GRIPPER_OPEN_MM_DEFAULT), float(v)))
+
+    def _extract_robot_action_gripper_open_mm(self, config_payload):
+        default_v = float(ROBOT_ACTION_GRIPPER_OPEN_MM_DEFAULT)
+        if not isinstance(config_payload, dict):
+            return default_v
+        raw = None
+        gripper = config_payload.get("gripper", {})
+        if isinstance(gripper, dict):
+            raw = gripper.get("open_mm_default", gripper.get("gripper_open_mm_default"))
+        if raw is None:
+            raw = config_payload.get("gripper_open_mm_default", None)
+        return float(self._sanitize_robot_action_gripper_open_mm(raw, default_mm=default_v))
 
     def _sanitize_robot_action_pose_config(self, raw_config):
         sanitized = self._clone_default_robot_action_pose_config()
@@ -2152,6 +2477,29 @@ class App(QMainWindow, form):
                             continue
                         sanitized["poses"][inherit_key] = list(ready_copy)
 
+            # 구버전 단일 키를 재료별 키(soju/beer)로 자동 승계한다.
+            shared_pose_suffixes = (
+                "service_ready_posj",
+                "pick_lift_out_posx",
+                "pour_start_cheers_posj",
+                "pour_contact_posj",
+                "pour_horizontal_posj",
+                "pour_diagonal_posj",
+                "pour_vertical_posj",
+            )
+            for suffix in shared_pose_suffixes:
+                shared_key = str(suffix)
+                shared_vals = sanitized["poses"].get(shared_key)
+                if not isinstance(shared_vals, list) or len(shared_vals) < 6:
+                    continue
+                shared_copy = [float(v) for v in list(shared_vals)[:6]]
+                for ingredient_code in ROBOT_ACTION_LIQUID_INGREDIENT_CODES:
+                    ingredient_key = f"{ingredient_code}_{suffix}"
+                    raw_specific = normalized_poses_raw.get(ingredient_key)
+                    if isinstance(raw_specific, (list, tuple)) and len(raw_specific) >= 6:
+                        continue
+                    sanitized["poses"][ingredient_key] = list(shared_copy)
+
         offsets_raw = raw_config.get("offsets_xyz_mm", {})
         if isinstance(offsets_raw, dict):
             normalized_offsets_raw = {}
@@ -2182,6 +2530,39 @@ class App(QMainWindow, form):
                     parsed.append(float(v))
                 if valid and len(parsed) == 3:
                     sanitized["offsets_xyz_mm"][key] = list(parsed)
+
+            # 구버전 단일 오프셋 키를 재료별 키(soju/beer)로 자동 승계한다.
+            shared_offset_suffixes = (
+                "pick_approach_offset",
+                "pick_grasp_offset",
+                "pick_lift_offset",
+                "place_offset",
+                "retreat_offset",
+            )
+            for suffix in shared_offset_suffixes:
+                shared_key = str(suffix)
+                shared_vals = sanitized["offsets_xyz_mm"].get(shared_key)
+                if not isinstance(shared_vals, list) or len(shared_vals) < 3:
+                    continue
+                shared_copy = [float(v) for v in list(shared_vals)[:3]]
+                for ingredient_code in ROBOT_ACTION_LIQUID_INGREDIENT_CODES:
+                    ingredient_key = f"{ingredient_code}_{suffix}"
+                    raw_specific = normalized_offsets_raw.get(ingredient_key)
+                    if isinstance(raw_specific, (list, tuple)) and len(raw_specific) >= 3:
+                        continue
+                    sanitized["offsets_xyz_mm"][ingredient_key] = list(shared_copy)
+
+        gripper_raw = raw_config.get("gripper", {})
+        open_raw = None
+        if isinstance(gripper_raw, dict):
+            open_raw = gripper_raw.get("open_mm_default", gripper_raw.get("gripper_open_mm_default"))
+        if open_raw is None:
+            open_raw = raw_config.get("gripper_open_mm_default", None)
+        if not isinstance(sanitized.get("gripper"), dict):
+            sanitized["gripper"] = {}
+        sanitized["gripper"]["open_mm_default"] = float(
+            self._sanitize_robot_action_gripper_open_mm(open_raw, default_mm=ROBOT_ACTION_GRIPPER_OPEN_MM_DEFAULT)
+        )
         return sanitized
 
     def _load_robot_action_pose_config(self):
@@ -2215,6 +2596,9 @@ class App(QMainWindow, form):
         data = config_payload.get(group, {})
         if not isinstance(data, dict):
             return None
+        if row_type == "global_gripper_open_mm":
+            val = self._extract_robot_action_gripper_open_mm(config_payload)
+            return [float(val)]
         values = data.get(key)
         if row_type in ("posj", "posx"):
             parsed = self._parse_float_values(values, expected_len=6)
@@ -2230,10 +2614,17 @@ class App(QMainWindow, form):
         row_type = str(row_def.get("type", "") or "").strip().lower()
         if not group or not key:
             return False, "설정 키가 없습니다."
-        if group not in ("poses", "offsets_xyz_mm"):
+        if group not in ("poses", "offsets_xyz_mm", "gripper"):
             return False, "설정 그룹이 올바르지 않습니다."
         if not isinstance(config_payload.get(group), dict):
             config_payload[group] = {}
+        if row_type == "global_gripper_open_mm":
+            parsed = self._parse_float_values(values, expected_len=1)
+            if parsed is None or len(parsed) < 1:
+                return False, f"{key} 값이 올바르지 않습니다."
+            v = float(self._sanitize_robot_action_gripper_open_mm(parsed[0], default_mm=ROBOT_ACTION_GRIPPER_OPEN_MM_DEFAULT))
+            config_payload[group][key] = float(v)
+            return True, "ok"
         expected_len = 6 if row_type in ("posj", "posx") else 3
         parsed = self._parse_float_values(values, expected_len=expected_len)
         if parsed is None:
@@ -2256,9 +2647,44 @@ class App(QMainWindow, form):
         if row_type == "vision_target":
             return "실시간 계산값(보기 전용)"
         if row_type == "gripper_open_action":
-            return f"{float(ROBOT_ACTION_GRIPPER_OPEN_MM_DEFAULT):.1f}mm (고정)"
+            ingredient_code = str(row_def.get("ingredient_code", "") or "").strip().lower()
+            open_mm = (
+                float(self._get_menu_gripper_open_mm(ingredient_code))
+                if ingredient_code
+                else float(self._extract_robot_action_gripper_open_mm(config_payload))
+            )
+            return f"{open_mm:.1f}mm"
         if row_type == "gripper_close_action":
+            ingredient_code = str(row_def.get("ingredient_code", "") or "").strip().lower()
+            if ingredient_code:
+                close_mm = float(self._get_menu_gripper_close_mm(ingredient_code))
+                ingredient_label = str(BARTENDER_MENU_LABELS.get(ingredient_code, ingredient_code) or ingredient_code)
+                return f"대상={ingredient_label}({ingredient_code}), 파지={close_mm:.1f}mm"
             return "대상 선택 필요(클릭 시 선택)"
+        if row_type == "gripper_actions":
+            ingredient_code = str(row_def.get("ingredient_code", "") or "").strip().lower()
+            close_mm = float(self._get_menu_gripper_close_mm(ingredient_code)) if ingredient_code else 41.0
+            open_mm = (
+                float(self._get_menu_gripper_open_mm(ingredient_code))
+                if ingredient_code
+                else float(self._extract_robot_action_gripper_open_mm(config_payload))
+            )
+            return f"오픈={open_mm:.1f}mm / 파지={float(close_mm):.1f}mm"
+        if row_type == "menu_gripper_open_mm":
+            ingredient_code = str(row_def.get("ingredient_code", "") or "").strip().lower()
+            open_mm = float(self._get_menu_gripper_open_mm(ingredient_code))
+            return f"{open_mm:.1f}mm"
+        if row_type == "global_gripper_open_mm":
+            open_mm = float(self._extract_robot_action_gripper_open_mm(config_payload))
+            return f"{open_mm:.1f}mm"
+        if row_type == "menu_offset_xyz":
+            ingredient_code = str(row_def.get("ingredient_code", "") or "").strip().lower()
+            xyz = self._get_menu_xyz_offset(ingredient_code)
+            return self._format_xyz_summary(list(xyz))
+        if row_type == "menu_gripper_close_mm":
+            ingredient_code = str(row_def.get("ingredient_code", "") or "").strip().lower()
+            close_mm = float(self._get_menu_gripper_close_mm(ingredient_code))
+            return f"{close_mm:.1f}mm"
         return "-"
 
     def _open_robot_action_pose_dialog(self):
@@ -2266,7 +2692,7 @@ class App(QMainWindow, form):
         dialog.setWindowTitle("로봇 액션 포지션 설정")
         dialog.setModal(True)
         dialog.setWindowFlags(Qt.Window | Qt.WindowTitleHint | Qt.WindowSystemMenuHint | Qt.WindowCloseButtonHint)
-        dialog.resize(1280, 720)
+        dialog.resize(1280, 760)
 
         root = QVBoxLayout(dialog)
         root.setContentsMargins(14, 12, 14, 12)
@@ -2274,39 +2700,25 @@ class App(QMainWindow, form):
 
         intro = QLabel(
             (
-                "robot_action_planner 시퀀스에서 사용하는 포지션/상대오프셋 관리 화면입니다.\n"
-                "현재값 칸을 클릭하면 값을 수정할 수 있으며, 수정/티칭해도 즉시 저장되지 않습니다.\n"
-                "비전 오프셋 이동은 반드시 [재료 병 비전 타겟 계산]의 [위치받아오기] 이후에만 가능합니다.\n"
-                "[저장] 버튼을 눌러야 파일에 반영됩니다.\n"
-                "새로고침은 저장된 값만 다시 불러옵니다."
+                "robot_action_planner 시퀀스 설정 화면입니다.\n"
+                "상단 탭(소주/맥주/글라스잔)으로 항목을 전환할 수 있습니다.\n"
+                "값 칸 클릭 수정은 지원하지 않습니다. 필요한 항목은 작업 버튼으로만 제어합니다.\n"
+                "비전 오프셋 이동은 해당 탭의 [비전 타겟 계산]에서 [위치받아오기] 이후에만 가능합니다."
             ),
             dialog,
         )
         intro.setWordWrap(True)
         root.addWidget(intro)
 
-        status_label = QLabel("대기: 필요한 행을 수정한 뒤 저장하세요.", dialog)
+        status_label = QLabel("대기: 필요한 항목을 작업 버튼으로 제어하세요.", dialog)
         status_label.setStyleSheet("font-weight: 700; color: #1f2937;")
         status_label.setWordWrap(True)
         root.addWidget(status_label)
 
-        table = QTableWidget(len(ROBOT_ACTION_POSE_ROW_DEFS), 8, dialog)
-        table.setEditTriggers(QTableWidget.NoEditTriggers)
-        table.setSelectionMode(QTableWidget.NoSelection)
-        table.verticalHeader().setVisible(False)
-        table.verticalHeader().setDefaultSectionSize(max(24, int(UI_PANEL_TABLE_ROW_HEIGHT)))
-        table.setHorizontalHeaderLabels(["순서", "구역", "변수명", "타입", "현재값", "작업", "설명", "상태"])
-        header = table.horizontalHeader()
-        if header is not None:
-            header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
-            header.setSectionResizeMode(1, QHeaderView.ResizeToContents)
-            header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
-            header.setSectionResizeMode(3, QHeaderView.ResizeToContents)
-            header.setSectionResizeMode(4, QHeaderView.Stretch)
-            header.setSectionResizeMode(5, QHeaderView.ResizeToContents)
-            header.setSectionResizeMode(6, QHeaderView.Stretch)
-            header.setSectionResizeMode(7, QHeaderView.ResizeToContents)
-        root.addWidget(table, 1)
+        tab_widget = QTabWidget(dialog)
+        tab_widget.setDocumentMode(True)
+        tab_widget.setElideMode(Qt.ElideRight)
+        root.addWidget(tab_widget, 1)
 
         action_row = QHBoxLayout()
         action_row.setSpacing(8)
@@ -2324,12 +2736,36 @@ class App(QMainWindow, form):
         draft_cfg = self._sanitize_robot_action_pose_config(saved_cfg)
         self._robot_action_pose_config = self._sanitize_robot_action_pose_config(saved_cfg)
 
+        saved_menu_offsets = dict(self._menu_xyz_offsets_by_code)
+        saved_menu_gripper = dict(self._menu_gripper_close_mm_by_code)
+        saved_menu_gripper_open = dict(self._menu_gripper_open_mm_by_code)
+        saved_menu_labels = dict(self._menu_label_by_code)
+        draft_menu_offsets = dict(saved_menu_offsets)
+        draft_menu_gripper = dict(saved_menu_gripper)
+        draft_menu_gripper_open = dict(saved_menu_gripper_open)
+        draft_menu_labels = dict(saved_menu_labels)
+
+        rows_by_tab = {}
+        for tab_code, _tab_label in ROBOT_ACTION_POSE_TABS:
+            rows_by_tab[str(tab_code)] = []
+        for row_def in list(ROBOT_ACTION_POSE_ROW_DEFS):
+            tab_code = str(row_def.get("tab", "soju") or "soju").strip().lower()
+            if tab_code not in rows_by_tab:
+                rows_by_tab[tab_code] = []
+            rows_by_tab[tab_code].append(dict(row_def))
+
         row_states = []
+        table_row_states = {}
+        tables_by_tab = {}
         save_state = {"saving": False, "done": False, "ok": False, "msg": "", "thread": None}
         vision_target_state = {
-            "payload": None,
-            "ingredient_code": "",
-            "ingredient_label": "",
+            "payload_by_code": dict(
+                self._robot_action_cached_vision_target_payload_by_code
+                if isinstance(self._robot_action_cached_vision_target_payload_by_code, dict)
+                else {}
+            ),
+            "last_code": str(self._robot_action_cached_vision_target_last_code or "").strip().lower(),
+            "last_label": str(self._robot_action_cached_vision_target_last_label or "").strip(),
         }
         gripper_target_state = {
             "ingredient_code": "",
@@ -2342,13 +2778,214 @@ class App(QMainWindow, form):
             "can_move_gripper": False,
             "can_teach_pose": False,
         }
+        row_selection_state = {
+            "table": None,
+            "row_index": -1,
+            "var_key": "",
+        }
 
         def _set_status(text: str):
             status_label.setText(str(text))
 
+        def _normalized_var_key(raw_name):
+            txt = str(raw_name or "").strip()
+            if not txt:
+                return ""
+            txt = re.sub(r"\s*\(return_ref\)\s*$", "", txt, flags=re.IGNORECASE)
+            return txt.strip().lower()
+
+        def _display_var_name(raw_name):
+            txt = _normalized_var_key(raw_name)
+            if not txt:
+                return "-"
+            return txt
+
+        def _display_row_type(raw_type):
+            key = str(raw_type or "").strip().lower()
+            if not key:
+                return "-"
+            short_map = {
+                "posj": "posj",
+                "posx": "posx",
+                "vision_target": "v_target",
+                "vision_offset": "v_offset",
+                "menu_offset_xyz": "m_xyz",
+                "menu_gripper_close_mm": "g_close_mm",
+                "menu_gripper_open_mm": "g_open_mm",
+                "gripper_open_action": "g_open",
+                "gripper_close_action": "g_close",
+            }
+            return str(short_map.get(key, key))
+
+        def _apply_row_bg_color(row_state, color_hex: str):
+            table_ref = row_state.get("table")
+            row_index = int(row_state.get("index", -1))
+            if table_ref is None or row_index < 0:
+                return
+            brush = QBrush(QColor(color_hex)) if color_hex else QBrush()
+            for col_index in (0, 1, 2, 3, 4, 6, 7):
+                item = table_ref.item(row_index, col_index)
+                if item is not None:
+                    item.setBackground(brush)
+            button_wrap = row_state.get("button_wrap")
+            if button_wrap is not None:
+                if color_hex:
+                    button_wrap.setStyleSheet(f"QFrame {{ background-color: {color_hex}; border-radius: 4px; }}")
+                else:
+                    button_wrap.setStyleSheet("")
+
+        def _refresh_row_selection_highlight():
+            selected_table = row_selection_state.get("table")
+            try:
+                selected_index = int(row_selection_state.get("row_index", -1))
+            except Exception:
+                selected_index = -1
+            selected_key = str(row_selection_state.get("var_key", "") or "").strip().lower()
+
+            for state in row_states:
+                state_table = state.get("table")
+                state_index = int(state.get("index", -1))
+                state_key = str(state.get("var_key", "") or "").strip().lower()
+                base_bg_hex = str(state.get("base_bg_hex", "") or "")
+
+                if state_table is selected_table and state_index == selected_index:
+                    _apply_row_bg_color(state, "#d7ebff")
+                    continue
+                if state_table is selected_table and selected_key and state_key == selected_key:
+                    _apply_row_bg_color(state, "#eaf4ff")
+                    continue
+                _apply_row_bg_color(state, base_bg_hex)
+
+        def _set_row_selected(row_state):
+            row_selection_state["table"] = row_state.get("table")
+            row_selection_state["row_index"] = int(row_state.get("index", -1))
+            row_selection_state["var_key"] = str(row_state.get("var_key", "") or "").strip().lower()
+            _refresh_row_selection_highlight()
+
+        def _persist_vision_target_state():
+            payload_by_code = vision_target_state.get("payload_by_code", {})
+            if isinstance(payload_by_code, dict):
+                self._robot_action_cached_vision_target_payload_by_code = dict(payload_by_code)
+            else:
+                self._robot_action_cached_vision_target_payload_by_code = {}
+            self._robot_action_cached_vision_target_last_code = str(
+                vision_target_state.get("last_code", "") or ""
+            ).strip().lower()
+            self._robot_action_cached_vision_target_last_label = str(
+                vision_target_state.get("last_label", "") or ""
+            ).strip()
+
+        def _menu_code_from_row(row_def, *, allow_glass: bool = False):
+            code = str(row_def.get("ingredient_code", "") or "").strip().lower()
+            if not code:
+                return ""
+            if allow_glass:
+                return code
+            if code in ROBOT_ACTION_LIQUID_INGREDIENT_CODES:
+                return code
+            return ""
+
+        def _get_draft_menu_xyz(code: str):
+            c = str(code or "").strip().lower()
+            raw = draft_menu_offsets.get(c, (0.0, 0.0, 0.0))
+            try:
+                return [float(raw[0]), float(raw[1]), float(raw[2])]
+            except Exception:
+                return [0.0, 0.0, 0.0]
+
+        def _set_draft_menu_xyz(code: str, xyz):
+            c = str(code or "").strip().lower()
+            if not c:
+                return
+            try:
+                x = float(xyz[0]) if isinstance(xyz, (list, tuple)) and len(xyz) >= 1 else 0.0
+                y = float(xyz[1]) if isinstance(xyz, (list, tuple)) and len(xyz) >= 2 else 0.0
+                z = float(xyz[2]) if isinstance(xyz, (list, tuple)) and len(xyz) >= 3 else 0.0
+            except Exception:
+                x, y, z = 0.0, 0.0, 0.0
+            draft_menu_offsets[c] = (float(x), float(y), float(z))
+            if c not in draft_menu_labels:
+                draft_menu_labels[c] = str(BARTENDER_MENU_LABELS.get(c, c) or c)
+
+        def _get_draft_menu_gripper(code: str):
+            c = str(code or "").strip().lower()
+            try:
+                value = float(draft_menu_gripper.get(c, 41.0))
+                if (not np.isfinite(value)) or value < 0.0:
+                    return 41.0
+                return float(value)
+            except Exception:
+                return 41.0
+
+        def _set_draft_menu_gripper(code: str, value_mm: float):
+            c = str(code or "").strip().lower()
+            if not c:
+                return
+            try:
+                value = float(value_mm)
+            except Exception:
+                value = 41.0
+            if (not np.isfinite(value)) or value < 0.0:
+                value = 41.0
+            draft_menu_gripper[c] = float(value)
+            if c not in draft_menu_labels:
+                draft_menu_labels[c] = str(BARTENDER_MENU_LABELS.get(c, c) or c)
+
+        def _get_draft_menu_gripper_open(code: str):
+            c = str(code or "").strip().lower()
+            try:
+                value = float(draft_menu_gripper_open.get(c, ROBOT_ACTION_GRIPPER_OPEN_MM_DEFAULT))
+            except Exception:
+                value = float(ROBOT_ACTION_GRIPPER_OPEN_MM_DEFAULT)
+            if (not np.isfinite(value)) or value < 0.0:
+                value = float(ROBOT_ACTION_GRIPPER_OPEN_MM_DEFAULT)
+            return min(float(ROBOT_ACTION_GRIPPER_OPEN_MM_DEFAULT), float(value))
+
+        def _set_draft_menu_gripper_open(code: str, value_mm: float):
+            c = str(code or "").strip().lower()
+            if not c:
+                return
+            try:
+                value = float(value_mm)
+            except Exception:
+                value = float(ROBOT_ACTION_GRIPPER_OPEN_MM_DEFAULT)
+            if (not np.isfinite(value)) or value < 0.0:
+                value = float(ROBOT_ACTION_GRIPPER_OPEN_MM_DEFAULT)
+            value = min(float(ROBOT_ACTION_GRIPPER_OPEN_MM_DEFAULT), float(value))
+            draft_menu_gripper_open[c] = float(value)
+            if c not in draft_menu_labels:
+                draft_menu_labels[c] = str(BARTENDER_MENU_LABELS.get(c, c) or c)
+
+        def _vision_payload_for_row(row_def):
+            row_code = _menu_code_from_row(row_def, allow_glass=False)
+            if row_code:
+                payload = vision_target_state["payload_by_code"].get(row_code)
+                return payload if isinstance(payload, dict) else None
+            fallback_code = str(vision_target_state.get("last_code", "") or "").strip().lower()
+            payload = vision_target_state["payload_by_code"].get(fallback_code)
+            return payload if isinstance(payload, dict) else None
+
         def _is_row_editable(row_state):
+            if not bool(row_state["def"].get("editable", True)):
+                return False
             row_type = str(row_state["def"].get("type", "") or "").strip().lower()
-            return row_type in ("posj", "posx", "vision_offset")
+            return row_type in (
+                "posj",
+                "posx",
+                "vision_offset",
+                "menu_offset_xyz",
+                "menu_gripper_close_mm",
+                "menu_gripper_open_mm",
+                "global_gripper_open_mm",
+            )
+
+        def _is_reference_row(row_def):
+            return bool(row_def.get("reference_only", False))
+
+        def _display_row_desc(row_def):
+            if _is_reference_row(row_def):
+                return "위치참조"
+            return str(row_def.get("desc", "") or "")
 
         def _refresh_runtime_caps():
             backend = self.backend
@@ -2396,32 +3033,46 @@ class App(QMainWindow, form):
 
         def _is_row_teachable(row_state):
             row_type = str(row_state["def"].get("type", "") or "").strip().lower()
-            return row_type in ("posj", "posx") and bool(runtime_caps.get("can_teach_pose"))
+            return (
+                bool(row_state["def"].get("editable", True))
+                and row_type in ("posj", "posx")
+                and bool(runtime_caps.get("can_teach_pose"))
+            )
 
         def _is_row_movable(row_state):
-            row_type = str(row_state["def"].get("type", "") or "").strip().lower()
+            row_def = row_state["def"]
+            row_type = str(row_def.get("type", "") or "").strip().lower()
             if row_type == "posj":
                 return bool(runtime_caps.get("can_move_posj"))
             if row_type == "posx":
                 return bool(runtime_caps.get("can_move_posx"))
             if row_type == "vision_target":
-                return bool(runtime_caps.get("can_move_vision"))
+                row_code = _menu_code_from_row(row_def, allow_glass=False)
+                return bool(runtime_caps.get("can_move_vision")) and bool(row_code)
             if row_type == "vision_offset":
-                return bool(runtime_caps.get("can_move_vision")) and isinstance(vision_target_state.get("payload"), dict)
+                return bool(runtime_caps.get("can_move_vision")) and isinstance(_vision_payload_for_row(row_def), dict)
             if row_type in ("gripper_open_action", "gripper_close_action"):
+                return bool(runtime_caps.get("can_move_gripper"))
+            if row_type == "gripper_actions":
                 return bool(runtime_caps.get("can_move_gripper"))
             return False
 
         def _refresh_row(row_state, status_text: str | None = None):
+            row_def = row_state["def"]
+            row_type = str(row_def.get("type", "") or "").strip().lower()
             value_item = row_state.get("value_item")
             state_item = row_state.get("state_item")
-            row_type = str(row_state["def"].get("type", "") or "").strip().lower()
+            row_code = _menu_code_from_row(row_def, allow_glass=True)
+            row_label = str(row_def.get("label", row_def.get("var_name", "-")) or "-")
+
             if value_item is not None:
-                if row_type == "vision_target":
-                    payload = vision_target_state.get("payload")
+                if _is_reference_row(row_def):
+                    value_item.setText("-")
+                elif row_type == "vision_target":
+                    payload = _vision_payload_for_row(row_def)
+                    ingredient_label = str(BARTENDER_MENU_LABELS.get(row_code, row_code) or row_code) if row_code else "-"
                     if isinstance(payload, dict):
                         xyz = payload.get("resolved_robot_xyz_mm", [])
-                        ingredient_label = str(vision_target_state.get("ingredient_label", "") or "-")
                         try:
                             tx = float(xyz[0])
                             ty = float(xyz[1])
@@ -2432,45 +3083,87 @@ class App(QMainWindow, form):
                     else:
                         value_item.setText("기준좌표 미수신(위치받아오기 필요)")
                 elif row_type == "gripper_open_action":
-                    value_item.setText(f"{float(ROBOT_ACTION_GRIPPER_OPEN_MM_DEFAULT):.1f}mm (고정)")
+                    ingredient_code = str(row_code or "").strip().lower()
+                    open_mm = float(_get_draft_menu_gripper_open(ingredient_code))
+                    value_item.setText(f"{open_mm:.1f}mm")
                 elif row_type == "gripper_close_action":
-                    ingredient_code = str(gripper_target_state.get("ingredient_code", "") or "").strip().lower()
-                    ingredient_label = str(gripper_target_state.get("ingredient_label", "") or "").strip()
+                    ingredient_code = str(row_code or gripper_target_state.get("ingredient_code", "") or "").strip().lower()
+                    ingredient_label = str(
+                        BARTENDER_MENU_LABELS.get(ingredient_code, gripper_target_state.get("ingredient_label", ingredient_code))
+                        or ingredient_code
+                    ).strip()
                     if ingredient_code:
-                        close_mm = float(self._get_menu_gripper_close_mm(ingredient_code))
+                        close_mm = float(_get_draft_menu_gripper(ingredient_code))
                         value_item.setText(f"대상={ingredient_label}({ingredient_code}), 파지={close_mm:.1f}mm")
                     else:
                         value_item.setText("대상 미선택(클릭 시 선택)")
+                elif row_type == "gripper_actions":
+                    ingredient_code = str(row_code or "").strip().lower()
+                    ingredient_label = str(BARTENDER_MENU_LABELS.get(ingredient_code, ingredient_code) or ingredient_code)
+                    close_mm = float(_get_draft_menu_gripper(ingredient_code)) if ingredient_code else 41.0
+                    open_mm = float(_get_draft_menu_gripper_open(ingredient_code)) if ingredient_code else float(
+                        ROBOT_ACTION_GRIPPER_OPEN_MM_DEFAULT
+                    )
+                    value_item.setText(
+                        f"대상={ingredient_label}({ingredient_code}), "
+                        f"오픈={open_mm:.1f}mm / 파지={close_mm:.1f}mm"
+                    )
+                elif row_type == "menu_gripper_open_mm":
+                    open_mm = float(_get_draft_menu_gripper_open(row_code))
+                    value_item.setText(f"{open_mm:.1f}mm")
+                elif row_type == "global_gripper_open_mm":
+                    value_item.setText(f"{float(ROBOT_ACTION_GRIPPER_OPEN_MM_DEFAULT):.1f}mm")
+                elif row_type == "menu_offset_xyz":
+                    xyz = _get_draft_menu_xyz(row_code)
+                    value_item.setText(self._format_xyz_summary(xyz))
+                elif row_type == "menu_gripper_close_mm":
+                    close_mm = float(_get_draft_menu_gripper(row_code))
+                    value_item.setText(f"{close_mm:.1f}mm")
                 else:
-                    value_item.setText(self._format_robot_action_pose_row_value(row_state["def"], draft_cfg))
+                    value_item.setText(self._format_robot_action_pose_row_value(row_def, draft_cfg))
+
             if state_item is not None:
                 if status_text is not None:
                     state_item.setText(str(status_text))
+                elif _is_reference_row(row_def):
+                    state_item.setText("참조")
                 elif row_type == "vision_target":
-                    state_item.setText("기준좌표 수신됨" if isinstance(vision_target_state.get("payload"), dict) else "기준좌표 필요")
+                    state_item.setText("기준좌표 수신됨" if isinstance(_vision_payload_for_row(row_def), dict) else "기준좌표 필요")
                 elif row_type == "vision_offset":
-                    state_item.setText("저장됨" if isinstance(vision_target_state.get("payload"), dict) else "기준좌표 필요")
+                    state_item.setText("저장됨" if isinstance(_vision_payload_for_row(row_def), dict) else "기준좌표 필요")
+                elif row_type in ("menu_offset_xyz", "menu_gripper_close_mm", "menu_gripper_open_mm"):
+                    state_item.setText("저장됨")
                 elif row_type == "gripper_open_action":
                     state_item.setText("실행 가능")
                 elif row_type == "gripper_close_action":
-                    state_item.setText(
-                        "실행 가능"
-                        if str(gripper_target_state.get("ingredient_code", "") or "").strip()
-                        else "대상 선택 필요"
-                    )
+                    state_item.setText("실행 가능" if row_code else "대상 선택 필요")
+                elif row_type == "gripper_actions":
+                    state_item.setText("실행 가능" if row_code else "대상 선택 필요")
+                elif row_type == "global_gripper_open_mm":
+                    state_item.setText("저장됨")
                 else:
                     state_item.setText("저장됨")
+
             move_btn = row_state.get("move_btn")
             teach_btn = row_state.get("teach_btn")
+            edit_btn = row_state.get("edit_btn")
+            extra_move_btns = row_state.get("extra_move_btns", [])
             if move_btn is not None:
                 move_btn.setEnabled((not save_state["saving"]) and _is_row_movable(row_state))
             if teach_btn is not None:
                 teach_btn.setEnabled((not save_state["saving"]) and _is_row_teachable(row_state))
+            if edit_btn is not None:
+                edit_btn.setEnabled((not save_state["saving"]) and _is_row_editable(row_state))
+            for _btn in list(extra_move_btns):
+                if _btn is None:
+                    continue
+                _btn.setEnabled((not save_state["saving"]) and _is_row_movable(row_state))
 
         def _refresh_all_rows(status_text: str | None = None):
             _refresh_runtime_caps()
             for row_state in row_states:
                 _refresh_row(row_state, status_text=status_text if _is_row_editable(row_state) else None)
+            _refresh_row_selection_highlight()
 
         def _default_vision_ingredient_code():
             result = self._voice_last_result if isinstance(self._voice_last_result, dict) else {}
@@ -2478,7 +3171,7 @@ class App(QMainWindow, form):
             if isinstance(recipe, dict):
                 for key, value in recipe.items():
                     code = str(key or "").strip().lower()
-                    if code not in ("soju", "beer"):
+                    if code not in ROBOT_ACTION_LIQUID_INGREDIENT_CODES:
                         continue
                     try:
                         amount = float(value)
@@ -2486,13 +3179,12 @@ class App(QMainWindow, form):
                         amount = 0.0
                     if amount > 0.0:
                         return code
-            return "beer"
+            return ROBOT_ACTION_LIQUID_INGREDIENT_CODES[-1]
 
         def _ask_vision_ingredient(row_label: str, prompt_text: str = "비전 기준으로 사용할 재료를 선택하세요:"):
             options = []
             option_to_code = {}
-            ordered_codes = ("soju", "beer")
-            for code in ordered_codes:
+            for code in ROBOT_ACTION_LIQUID_INGREDIENT_CODES:
                 label = str(BARTENDER_MENU_LABELS.get(code, code) or code)
                 item = f"{label} ({code})"
                 options.append(item)
@@ -2520,13 +3212,44 @@ class App(QMainWindow, form):
             selected_label = str(BARTENDER_MENU_LABELS.get(selected_code, selected_code) or selected_code)
             return selected_code, selected_label
 
+        def _resolve_row_ingredient(row_def, row_label: str, prompt_text: str, *, allow_glass: bool = False):
+            fixed_code = _menu_code_from_row(row_def, allow_glass=allow_glass)
+            if fixed_code:
+                fixed_label = str(BARTENDER_MENU_LABELS.get(fixed_code, fixed_code) or fixed_code)
+                return fixed_code, fixed_label
+            return _ask_vision_ingredient(row_label=row_label, prompt_text=prompt_text)
+
+        def _build_draft_menu_offset_payload():
+            payload = {"menus": {}}
+            all_codes = set()
+            all_codes.update(str(k).strip().lower() for k in draft_menu_offsets.keys())
+            all_codes.update(str(k).strip().lower() for k in draft_menu_gripper.keys())
+            all_codes.update(str(k).strip().lower() for k in draft_menu_gripper_open.keys())
+            all_codes.update(str(k).strip().lower() for k in draft_menu_labels.keys())
+            all_codes.update(str(k).strip().lower() for k in BARTENDER_MENU_LABELS.keys())
+            for code in sorted(all_codes):
+                if (not code) or code in BARTENDER_MENU_OFFSET_EXCLUDED_CODES_NORM:
+                    continue
+                xyz = _get_draft_menu_xyz(code)
+                payload["menus"][code] = {
+                    "label": str(draft_menu_labels.get(code, BARTENDER_MENU_LABELS.get(code, code)) or code),
+                    "offset_xyz_mm": [float(xyz[0]), float(xyz[1]), float(xyz[2])],
+                    "gripper_close_mm": float(_get_draft_menu_gripper(code)),
+                    "gripper_open_mm": float(_get_draft_menu_gripper_open(code)),
+                }
+            return payload
+
         def _edit_row(row_state):
             if save_state["saving"]:
+                return
+            if not _is_row_editable(row_state):
                 return
             row_def = row_state["def"]
             row_type = str(row_def.get("type", "") or "").strip().lower()
             row_label = str(row_def.get("label", row_def.get("var_name", "-")))
             values = self._get_robot_action_pose_entry(draft_cfg, row_def)
+            edited = None
+
             if row_type == "posj":
                 defaults = values if values is not None else [0.0] * 6
                 edited = self._ask_six_values_form(
@@ -2552,6 +3275,74 @@ class App(QMainWindow, form):
                     defaults,
                     guide_text="안내: 비전 기준 상대 오프셋(mm)입니다. 티칭은 지원하지 않습니다.",
                 )
+            elif row_type == "menu_offset_xyz":
+                code = _menu_code_from_row(row_def, allow_glass=True)
+                defaults = _get_draft_menu_xyz(code)
+                edited = self._ask_three_values_form(
+                    f"{row_label} 수정",
+                    ["X", "Y", "Z"],
+                    defaults,
+                    guide_text="안내: 재료별 비전 기준 XYZ 오프셋(mm) 값입니다.",
+                )
+                if edited is None:
+                    return
+                if isinstance(edited, str):
+                    QMessageBox.warning(dialog, "포지션 설정", edited, QMessageBox.Ok)
+                    return
+                _set_draft_menu_xyz(code, edited)
+                _refresh_row(row_state, status_text="수정됨(미저장)")
+                _set_status(f"{row_label}: 값 수정 완료 (저장 필요)")
+                return
+            elif row_type == "menu_gripper_close_mm":
+                code = _menu_code_from_row(row_def, allow_glass=True)
+                current_v = float(_get_draft_menu_gripper(code))
+                value, ok_edit = QInputDialog.getDouble(
+                    dialog,
+                    f"{row_label} 수정",
+                    "그리퍼 닫힘 거리(mm):",
+                    current_v,
+                    0.0,
+                    float(ROBOT_ACTION_GRIPPER_OPEN_MM_DEFAULT),
+                    2,
+                )
+                if not ok_edit:
+                    return
+                _set_draft_menu_gripper(code, float(value))
+                _refresh_row(row_state, status_text="수정됨(미저장)")
+                _set_status(f"{row_label}: 값 수정 완료 (저장 필요)")
+                return
+            elif row_type == "menu_gripper_open_mm":
+                code = _menu_code_from_row(row_def, allow_glass=True)
+                current_v = float(_get_draft_menu_gripper_open(code))
+                value, ok_edit = QInputDialog.getDouble(
+                    dialog,
+                    f"{row_label} 수정",
+                    "그리퍼 오픈 거리(mm):",
+                    current_v,
+                    0.0,
+                    float(ROBOT_ACTION_GRIPPER_OPEN_MM_DEFAULT),
+                    2,
+                )
+                if not ok_edit:
+                    return
+                _set_draft_menu_gripper_open(code, float(value))
+                _refresh_all_rows(status_text="수정됨(미저장)")
+                _set_status(f"{row_label}: 값 수정 완료 (저장 필요)")
+                return
+            elif row_type == "global_gripper_open_mm":
+                current_v = float(ROBOT_ACTION_GRIPPER_OPEN_MM_DEFAULT)
+                value, ok_edit = QInputDialog.getDouble(
+                    dialog,
+                    f"{row_label} 수정",
+                    "그리퍼 오픈 거리(mm):",
+                    current_v,
+                    0.0,
+                    float(ROBOT_ACTION_GRIPPER_OPEN_MM_DEFAULT),
+                    2,
+                )
+                if not ok_edit:
+                    return
+                return
             else:
                 return
 
@@ -2587,7 +3378,7 @@ class App(QMainWindow, form):
             _refresh_row(row_state, status_text="티칭됨(미저장)")
             _set_status(f"{row_label}: 현재 위치 티칭 반영 (저장 필요)")
 
-        def _move_row(row_state):
+        def _move_row(row_state, action: str = "move"):
             if save_state["saving"]:
                 return
             row_def = row_state["def"]
@@ -2636,7 +3427,12 @@ class App(QMainWindow, form):
                 if not hasattr(self.backend, "get_robot_action_vision_target_xyz"):
                     QMessageBox.warning(dialog, "비전 기준좌표", "백엔드가 비전 기준좌표 계산을 지원하지 않습니다.", QMessageBox.Ok)
                     return
-                ingredient_code, ingredient_label = _ask_vision_ingredient(row_label)
+                ingredient_code, ingredient_label = _resolve_row_ingredient(
+                    row_def,
+                    row_label,
+                    "비전 기준으로 사용할 재료를 선택하세요:",
+                    allow_glass=False,
+                )
                 if not ingredient_code:
                     return
                 reply = QMessageBox.question(
@@ -2656,22 +3452,20 @@ class App(QMainWindow, form):
 
                 ok_calc, payload_calc, msg_calc = self.backend.get_robot_action_vision_target_xyz(
                     ingredient_code=ingredient_code,
-                    menu_offsets=self._build_menu_offset_payload(),
+                    menu_offsets=_build_draft_menu_offset_payload(),
                     apply_menu_offset=True,
                 )
                 if not ok_calc:
-                    vision_target_state["payload"] = None
-                    vision_target_state["ingredient_code"] = ""
-                    vision_target_state["ingredient_label"] = ""
                     _refresh_all_rows()
                     QMessageBox.warning(dialog, "비전 기준좌표", str(msg_calc or "기준좌표 계산 실패"), QMessageBox.Ok)
                     _set_status(f"{row_label}: {msg_calc}")
                     self.append_log(f"[액션포지션] {row_label} 기준좌표 수신 실패: {msg_calc}\n")
                     return
 
-                vision_target_state["payload"] = dict(payload_calc) if isinstance(payload_calc, dict) else {}
-                vision_target_state["ingredient_code"] = str(ingredient_code)
-                vision_target_state["ingredient_label"] = str(ingredient_label)
+                vision_target_state["payload_by_code"][ingredient_code] = dict(payload_calc) if isinstance(payload_calc, dict) else {}
+                vision_target_state["last_code"] = str(ingredient_code)
+                vision_target_state["last_label"] = str(ingredient_label)
+                _persist_vision_target_state()
                 _refresh_all_rows()
                 _refresh_row(row_state, status_text="기준좌표 수신됨")
                 _set_status(f"{row_label}: {msg_calc}")
@@ -2681,27 +3475,38 @@ class App(QMainWindow, form):
                 if not hasattr(self.backend, "send_gripper_move"):
                     QMessageBox.warning(dialog, "그리퍼 실행", "백엔드가 그리퍼 이동을 지원하지 않습니다.", QMessageBox.Ok)
                     return
-                open_mm = float(ROBOT_ACTION_GRIPPER_OPEN_MM_DEFAULT)
+                ingredient_code, ingredient_label = _resolve_row_ingredient(
+                    row_def,
+                    row_label,
+                    "오픈할 목표 재료를 선택하세요:",
+                    allow_glass=True,
+                )
+                if not ingredient_code:
+                    return
+                open_mm = float(_get_draft_menu_gripper_open(ingredient_code))
                 if not self._confirm_motion_with_values(
                     "그리퍼 오픈 확인",
-                    "안내: 로봇 그리퍼가 실제로 이동합니다.",
+                    "안내: 선택 재료 기준 오픈(mm)으로 그리퍼가 실제로 이동합니다.",
                     ["Open(mm)"],
                     [open_mm],
-                    "액션포지션 그리퍼 오픈",
+                    f"액션포지션 그리퍼 오픈 ({ingredient_label})",
                 ):
                     return
                 ok_move, msg_move = self.backend.send_gripper_move(open_mm)
+                msg_move = f"{msg_move} | target={ingredient_label}({ingredient_code}), open={open_mm:.1f}mm"
             elif row_type == "gripper_close_action":
                 if not hasattr(self.backend, "send_gripper_move"):
                     QMessageBox.warning(dialog, "그리퍼 실행", "백엔드가 그리퍼 이동을 지원하지 않습니다.", QMessageBox.Ok)
                     return
-                ingredient_code, ingredient_label = _ask_vision_ingredient(
+                ingredient_code, ingredient_label = _resolve_row_ingredient(
+                    row_def,
                     row_label,
-                    prompt_text="파지할 목표 재료를 선택하세요:",
+                    "파지할 목표 재료를 선택하세요:",
+                    allow_glass=True,
                 )
                 if not ingredient_code:
                     return
-                close_mm = float(self._get_menu_gripper_close_mm(ingredient_code))
+                close_mm = float(_get_draft_menu_gripper(ingredient_code))
                 if not self._confirm_motion_with_values(
                     "그리퍼 파지 확인",
                     "안내: 선택 재료 기준 파지(mm)로 그리퍼가 실제로 이동합니다.",
@@ -2715,14 +3520,44 @@ class App(QMainWindow, form):
                     gripper_target_state["ingredient_code"] = str(ingredient_code)
                     gripper_target_state["ingredient_label"] = str(ingredient_label)
                 msg_move = f"{msg_move} | target={ingredient_label}({ingredient_code}), close={close_mm:.1f}mm"
+            elif row_type == "gripper_actions":
+                if not hasattr(self.backend, "send_gripper_move"):
+                    QMessageBox.warning(dialog, "그리퍼 실행", "백엔드가 그리퍼 이동을 지원하지 않습니다.", QMessageBox.Ok)
+                    return
+                ingredient_code = str(_menu_code_from_row(row_def, allow_glass=True) or "").strip().lower()
+                ingredient_label = str(BARTENDER_MENU_LABELS.get(ingredient_code, ingredient_code) or ingredient_code)
+                if str(action or "").strip().lower() == "open":
+                    open_mm = float(_get_draft_menu_gripper_open(ingredient_code))
+                    if not self._confirm_motion_with_values(
+                        "그리퍼 오픈 확인",
+                        "안내: 선택 재료 기준 오픈(mm)으로 그리퍼가 실제로 이동합니다.",
+                        ["Open(mm)"],
+                        [open_mm],
+                        f"액션포지션 그리퍼 오픈 ({ingredient_label})",
+                    ):
+                        return
+                    ok_move, msg_move = self.backend.send_gripper_move(open_mm)
+                    msg_move = f"{msg_move} | target={ingredient_label}({ingredient_code}), open={open_mm:.1f}mm"
+                else:
+                    close_mm = float(_get_draft_menu_gripper(ingredient_code))
+                    if not self._confirm_motion_with_values(
+                        "그리퍼 파지 확인",
+                        "안내: 선택 재료 기준 파지(mm)로 그리퍼가 실제로 이동합니다.",
+                        ["Close(mm)"],
+                        [close_mm],
+                        f"액션포지션 그리퍼 파지 ({ingredient_label})",
+                    ):
+                        return
+                    ok_move, msg_move = self.backend.send_gripper_move(close_mm)
+                    msg_move = f"{msg_move} | target={ingredient_label}({ingredient_code}), close={close_mm:.1f}mm"
             elif row_type == "vision_offset":
                 values = self._get_robot_action_pose_entry(draft_cfg, row_def)
                 if values is None:
                     QMessageBox.warning(dialog, "비전 오프셋 이동", f"{row_label} 값이 없습니다.", QMessageBox.Ok)
                     return
-                payload = vision_target_state.get("payload")
+                payload = _vision_payload_for_row(row_def)
                 if not isinstance(payload, dict):
-                    QMessageBox.warning(dialog, "비전 오프셋 이동", "먼저 '재료 병 비전 타겟 계산'에서 위치받아오기를 실행하세요.", QMessageBox.Ok)
+                    QMessageBox.warning(dialog, "비전 오프셋 이동", "먼저 같은 탭의 '비전 타겟 계산'에서 위치받아오기를 실행하세요.", QMessageBox.Ok)
                     return
                 base_xyz = payload.get("resolved_robot_xyz_mm")
                 if not isinstance(base_xyz, (list, tuple)) or len(base_xyz) < 3:
@@ -2758,7 +3593,8 @@ class App(QMainWindow, form):
                         QMessageBox.warning(dialog, "비전 오프셋 이동", "현재 TCP 자세(ABC) 파싱에 실패했습니다.", QMessageBox.Ok)
                         return
 
-                ingredient_label = str(vision_target_state.get("ingredient_label", "") or "-")
+                ingredient_code = _menu_code_from_row(row_def, allow_glass=False)
+                ingredient_label = str(BARTENDER_MENU_LABELS.get(ingredient_code, ingredient_code) or ingredient_code) if ingredient_code else "-"
                 if not self._confirm_motion_with_values(
                     "비전 오프셋 이동 확인",
                     (
@@ -2792,110 +3628,273 @@ class App(QMainWindow, form):
             _set_status(f"{row_label}: {msg_move}")
             self.append_log(f"[액션포지션 이동] {row_label}: {msg_move}\n")
 
-        for row_index, row_def in enumerate(ROBOT_ACTION_POSE_ROW_DEFS):
-            value_item = QTableWidgetItem(self._format_robot_action_pose_row_value(row_def, draft_cfg))
-            state_item = QTableWidgetItem("참조전용" if str(row_def.get("type", "")).lower() == "vision_target" else "저장됨")
-            table.setItem(row_index, 0, QTableWidgetItem(str(row_index + 1)))
-            table.setItem(row_index, 1, QTableWidgetItem(str(row_def.get("section", "-"))))
-            table.setItem(row_index, 2, QTableWidgetItem(str(row_def.get("var_name", "-"))))
-            table.setItem(row_index, 3, QTableWidgetItem(str(row_def.get("type", "-"))))
-            table.setItem(row_index, 4, value_item)
-            table.setItem(row_index, 6, QTableWidgetItem(str(row_def.get("desc", ""))))
-            table.setItem(row_index, 7, state_item)
+        table_header_labels = ["순서", "구역", "변수명", "타입", "현재값", "작업", "설명", "상태"]
+        for tab_code, tab_label in ROBOT_ACTION_POSE_TABS:
+            page = QWidget(tab_widget)
+            page_layout = QVBoxLayout(page)
+            page_layout.setContentsMargins(4, 4, 4, 4)
+            page_layout.setSpacing(4)
+            tab_rows = list(rows_by_tab.get(tab_code, []))
 
-            button_wrap = QFrame(table)
-            button_layout = QHBoxLayout(button_wrap)
-            button_layout.setContentsMargins(4, 0, 4, 0)
-            button_layout.setSpacing(4)
-            move_btn = None
-            teach_btn = None
-            row_type = str(row_def.get("type", "") or "").strip().lower()
-            if row_type in ("posj", "posx"):
-                move_btn = QPushButton("이동", button_wrap)
-                move_btn.setMinimumWidth(52)
-                teach_btn = QPushButton("티칭", button_wrap)
-                teach_btn.setMinimumWidth(56)
-                button_layout.addWidget(move_btn)
-                button_layout.addWidget(teach_btn)
-            elif row_type == "vision_target":
-                move_btn = QPushButton("위치받아오기", button_wrap)
-                move_btn.setMinimumWidth(94)
-                button_layout.addWidget(move_btn)
-            elif row_type == "vision_offset":
-                move_btn = QPushButton("이동", button_wrap)
-                move_btn.setMinimumWidth(52)
-                ro_label = QLabel("값클릭 수정", button_wrap)
-                ro_label.setStyleSheet("color: #475569;")
-                button_layout.addWidget(move_btn)
-                button_layout.addWidget(ro_label)
-            elif row_type == "gripper_open_action":
-                move_btn = QPushButton("오픈", button_wrap)
-                move_btn.setMinimumWidth(62)
-                button_layout.addWidget(move_btn)
-            elif row_type == "gripper_close_action":
-                move_btn = QPushButton("파지", button_wrap)
-                move_btn.setMinimumWidth(62)
-                button_layout.addWidget(move_btn)
-            else:
-                ro_label = QLabel("보기", button_wrap)
-                ro_label.setStyleSheet("color: #475569;")
-                button_layout.addWidget(ro_label)
-            table.setCellWidget(row_index, 5, button_wrap)
+            table = QTableWidget(len(tab_rows), 8, page)
+            table.setEditTriggers(QTableWidget.NoEditTriggers)
+            table.setSelectionMode(QTableWidget.NoSelection)
+            table.verticalHeader().setVisible(False)
+            table.verticalHeader().setDefaultSectionSize(max(24, int(UI_PANEL_TABLE_ROW_HEIGHT)))
+            table.setHorizontalHeaderLabels(table_header_labels)
+            header = table.horizontalHeader()
+            if header is not None:
+                header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
+                header.setSectionResizeMode(1, QHeaderView.ResizeToContents)
+                header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
+                header.setSectionResizeMode(3, QHeaderView.ResizeToContents)
+                header.setSectionResizeMode(4, QHeaderView.Stretch)
+                header.setSectionResizeMode(5, QHeaderView.ResizeToContents)
+                header.setSectionResizeMode(6, QHeaderView.Stretch)
+                header.setSectionResizeMode(7, QHeaderView.ResizeToContents)
+            page_layout.addWidget(table, 1)
+            tab_widget.addTab(page, str(tab_label))
+            tables_by_tab[tab_code] = table
+            table_row_states[table] = []
 
-            row_state = {
-                "index": row_index,
-                "def": row_def,
-                "value_item": value_item,
-                "state_item": state_item,
-                "move_btn": move_btn,
-                "teach_btn": teach_btn,
-            }
-            if move_btn is not None:
-                move_btn.clicked.connect(lambda _checked=False, state=row_state: _move_row(state))
-            if teach_btn is not None:
-                teach_btn.clicked.connect(lambda _checked=False, state=row_state: _teach_row(state))
-            row_states.append(row_state)
+            for row_index, row_def in enumerate(tab_rows):
+                if _is_reference_row(row_def):
+                    value_item = QTableWidgetItem("-")
+                else:
+                    value_item = QTableWidgetItem(self._format_robot_action_pose_row_value(row_def, draft_cfg))
+                if _is_reference_row(row_def):
+                    state_item = QTableWidgetItem("참조")
+                else:
+                    state_item = QTableWidgetItem(
+                        "참조전용" if str(row_def.get("type", "")).lower() == "vision_target" else "저장됨"
+                    )
+                table.setItem(row_index, 0, QTableWidgetItem(str(row_index + 1)))
+                table.setItem(row_index, 1, QTableWidgetItem(str(row_def.get("section", "-"))))
+                table.setItem(row_index, 2, QTableWidgetItem(_display_var_name(row_def.get("var_name", "-"))))
+                table.setItem(row_index, 3, QTableWidgetItem(_display_row_type(row_def.get("type", "-"))))
+                table.setItem(row_index, 4, value_item)
+                table.setItem(row_index, 6, QTableWidgetItem(_display_row_desc(row_def)))
+                table.setItem(row_index, 7, state_item)
 
-        def _on_table_cell_clicked(row_index, column_index):
-            if int(column_index) != 4:
-                return
-            if row_index < 0 or row_index >= len(row_states):
-                return
-            _edit_row(row_states[row_index])
+                button_wrap = QFrame(table)
+                button_layout = QHBoxLayout(button_wrap)
+                button_layout.setContentsMargins(2, 0, 2, 0)
+                button_layout.setSpacing(2)
+                move_btn = None
+                teach_btn = None
+                edit_btn = None
+                extra_move_btns = []
+                row_type = str(row_def.get("type", "") or "").strip().lower()
+                if row_type in ("posj", "posx"):
+                    move_btn = QPushButton("이동", button_wrap)
+                    move_btn.setMinimumWidth(44)
+                    button_layout.addWidget(move_btn)
+                    if bool(row_def.get("editable", True)):
+                        teach_btn = QPushButton("티칭", button_wrap)
+                        teach_btn.setMinimumWidth(46)
+                        button_layout.addWidget(teach_btn)
+                elif row_type == "vision_target":
+                    move_btn = QPushButton("위치받아오기", button_wrap)
+                    move_btn.setMinimumWidth(78)
+                    button_layout.addWidget(move_btn)
+                elif row_type == "vision_offset":
+                    move_btn = QPushButton("이동", button_wrap)
+                    move_btn.setMinimumWidth(44)
+                    button_layout.addWidget(move_btn)
+                elif row_type == "gripper_open_action":
+                    move_btn = QPushButton("오픈", button_wrap)
+                    move_btn.setMinimumWidth(48)
+                    button_layout.addWidget(move_btn)
+                elif row_type == "gripper_close_action":
+                    move_btn = QPushButton("파지", button_wrap)
+                    move_btn.setMinimumWidth(48)
+                    button_layout.addWidget(move_btn)
+                elif row_type == "gripper_actions":
+                    open_btn = QPushButton("오픈", button_wrap)
+                    open_btn.setMinimumWidth(48)
+                    close_btn = QPushButton("파지", button_wrap)
+                    close_btn.setMinimumWidth(48)
+                    button_layout.addWidget(open_btn)
+                    button_layout.addWidget(close_btn)
+                    extra_move_btns.extend([open_btn, close_btn])
+                elif row_type in ("menu_offset_xyz", "menu_gripper_close_mm", "menu_gripper_open_mm"):
+                    pass
+                table.setCellWidget(row_index, 5, button_wrap)
 
-        table.cellClicked.connect(_on_table_cell_clicked)
+                row_state = {
+                    "index": row_index,
+                    "tab": tab_code,
+                    "table": table,
+                    "def": row_def,
+                    "value_item": value_item,
+                    "state_item": state_item,
+                    "move_btn": move_btn,
+                    "teach_btn": teach_btn,
+                    "edit_btn": edit_btn,
+                    "extra_move_btns": list(extra_move_btns),
+                    "button_wrap": button_wrap,
+                    "base_bg_hex": "#fff9db" if str(row_def.get("section", "") or "").startswith("[0]") else "",
+                    "var_key": _normalized_var_key(row_def.get("var_name", "")),
+                }
+                if move_btn is not None:
+                    move_btn.clicked.connect(
+                        lambda _checked=False, state=row_state: (_set_row_selected(state), _move_row(state))
+                    )
+                if teach_btn is not None:
+                    teach_btn.clicked.connect(
+                        lambda _checked=False, state=row_state: (_set_row_selected(state), _teach_row(state))
+                    )
+                if row_type == "gripper_actions" and len(extra_move_btns) >= 2:
+                    open_btn = extra_move_btns[0]
+                    close_btn = extra_move_btns[1]
+                    open_btn.clicked.connect(
+                        lambda _checked=False, state=row_state: (_set_row_selected(state), _move_row(state, action="open"))
+                    )
+                    close_btn.clicked.connect(
+                        lambda _checked=False, state=row_state: (_set_row_selected(state), _move_row(state, action="close"))
+                    )
+                table_row_states[table].append(row_state)
+                row_states.append(row_state)
+                _apply_row_bg_color(row_state, row_state.get("base_bg_hex", ""))
+
+            def _on_table_cell_clicked(row_index, column_index, _table=table):
+                if save_state["saving"]:
+                    return
+                states = table_row_states.get(_table, [])
+                if int(row_index) < 0 or int(row_index) >= len(states):
+                    return
+                state = states[int(row_index)]
+                _set_row_selected(state)
+                if int(column_index) == 4 and _is_row_editable(state):
+                    _edit_row(state)
+
+            table.cellClicked.connect(_on_table_cell_clicked)
+
         _refresh_all_rows()
 
         def _reload_saved_values():
-            nonlocal saved_cfg, draft_cfg
+            nonlocal saved_cfg, draft_cfg, saved_menu_offsets, saved_menu_gripper, saved_menu_gripper_open, saved_menu_labels
+            nonlocal draft_menu_offsets, draft_menu_gripper, draft_menu_gripper_open, draft_menu_labels
             if save_state["saving"]:
                 return
             loaded = self._load_robot_action_pose_config()
             saved_cfg = self._sanitize_robot_action_pose_config(loaded)
             draft_cfg = self._sanitize_robot_action_pose_config(saved_cfg)
             self._robot_action_pose_config = self._sanitize_robot_action_pose_config(saved_cfg)
-            vision_target_state["payload"] = None
-            vision_target_state["ingredient_code"] = ""
-            vision_target_state["ingredient_label"] = ""
+            saved_menu_offsets = dict(self._menu_xyz_offsets_by_code)
+            saved_menu_gripper = dict(self._menu_gripper_close_mm_by_code)
+            saved_menu_gripper_open = dict(self._menu_gripper_open_mm_by_code)
+            saved_menu_labels = dict(self._menu_label_by_code)
+            draft_menu_offsets = dict(saved_menu_offsets)
+            draft_menu_gripper = dict(saved_menu_gripper)
+            draft_menu_gripper_open = dict(saved_menu_gripper_open)
+            draft_menu_labels = dict(saved_menu_labels)
             gripper_target_state["ingredient_code"] = ""
             gripper_target_state["ingredient_label"] = ""
             _refresh_all_rows(status_text="저장값 로드")
-            _set_status("저장된 포지션 값을 다시 불러왔습니다.")
+            _set_status("저장된 포지션/오프셋 값을 다시 불러왔습니다. (위치받아오기 값 유지)")
+
+        def _save_menu_offsets_payload(offset_map: dict, gripper_map: dict, gripper_open_map: dict, label_map: dict):
+            payload = {"menus": {}}
+            codes = []
+            for code in self._menu_codes_for_offset_ui():
+                code_txt = str(code or "").strip().lower()
+                if not code_txt:
+                    continue
+                if code_txt not in codes:
+                    codes.append(code_txt)
+            extra_codes = set()
+            extra_codes.update(str(k).strip().lower() for k in offset_map.keys())
+            extra_codes.update(str(k).strip().lower() for k in gripper_map.keys())
+            extra_codes.update(str(k).strip().lower() for k in gripper_open_map.keys())
+            extra_codes.update(str(k).strip().lower() for k in label_map.keys())
+            for code in sorted(extra_codes):
+                if (not code) or code in BARTENDER_MENU_OFFSET_EXCLUDED_CODES_NORM:
+                    continue
+                if code not in codes:
+                    codes.append(code)
+            for code in codes:
+                xyz = offset_map.get(code, (0.0, 0.0, 0.0))
+                try:
+                    x = float(xyz[0])
+                    y = float(xyz[1])
+                    z = float(xyz[2])
+                except Exception:
+                    x, y, z = 0.0, 0.0, 0.0
+                try:
+                    grip_mm = float(gripper_map.get(code, 41.0))
+                    if (not np.isfinite(grip_mm)) or grip_mm < 0.0:
+                        grip_mm = 41.0
+                except Exception:
+                    grip_mm = 41.0
+                try:
+                    grip_open_mm = float(gripper_open_map.get(code, ROBOT_ACTION_GRIPPER_OPEN_MM_DEFAULT))
+                    if (not np.isfinite(grip_open_mm)) or grip_open_mm < 0.0:
+                        grip_open_mm = float(ROBOT_ACTION_GRIPPER_OPEN_MM_DEFAULT)
+                    grip_open_mm = min(float(ROBOT_ACTION_GRIPPER_OPEN_MM_DEFAULT), float(grip_open_mm))
+                except Exception:
+                    grip_open_mm = float(ROBOT_ACTION_GRIPPER_OPEN_MM_DEFAULT)
+                label = str(label_map.get(code, BARTENDER_MENU_LABELS.get(code, code)) or code)
+                payload["menus"][code] = {
+                    "label": label,
+                    "offset_xyz_mm": [float(x), float(y), float(z)],
+                    "gripper_close_mm": float(grip_mm),
+                    "gripper_open_mm": float(grip_open_mm),
+                }
+            try:
+                os.makedirs(os.path.dirname(MENU_OFFSET_CONFIG_PATH), exist_ok=True)
+                with open(MENU_OFFSET_CONFIG_PATH, "w", encoding="utf-8") as fp:
+                    json.dump(payload, fp, ensure_ascii=False, indent=2)
+                return True, "저장 완료"
+            except Exception as exc:
+                return False, f"저장 실패: {exc}"
+
+        def _set_dialog_enabled(enabled: bool):
+            tab_widget.setEnabled(bool(enabled))
+            for table in list(table_row_states.keys()):
+                table.setEnabled(bool(enabled))
+            refresh_btn.setEnabled(bool(enabled))
+            save_btn.setEnabled(bool(enabled))
+            close_btn.setEnabled(bool(enabled))
 
         def _finish_save():
-            nonlocal saved_cfg, draft_cfg
+            nonlocal saved_cfg, draft_cfg, saved_menu_offsets, saved_menu_gripper, saved_menu_gripper_open, saved_menu_labels
+            nonlocal draft_menu_offsets, draft_menu_gripper, draft_menu_gripper_open, draft_menu_labels
             save_state["saving"] = False
-            table.setEnabled(True)
-            refresh_btn.setEnabled(True)
-            save_btn.setEnabled(True)
-            close_btn.setEnabled(True)
+            _set_dialog_enabled(True)
             if bool(save_state["ok"]):
                 saved_cfg = self._sanitize_robot_action_pose_config(draft_cfg)
                 draft_cfg = self._sanitize_robot_action_pose_config(saved_cfg)
                 self._robot_action_pose_config = self._sanitize_robot_action_pose_config(saved_cfg)
-                _refresh_all_rows(status_text="저장됨")
-                _set_status(f"저장 완료: {ROBOT_ACTION_POSE_CONFIG_PATH}")
-                self._append_voice_order_log(f"로봇 액션 포지션 설정 저장: {ROBOT_ACTION_POSE_CONFIG_PATH}")
+
+                ok_menu, msg_menu = _save_menu_offsets_payload(
+                    dict(draft_menu_offsets),
+                    dict(draft_menu_gripper),
+                    dict(draft_menu_gripper_open),
+                    dict(draft_menu_labels),
+                )
+                if ok_menu:
+                    self._menu_xyz_offsets_by_code = dict(draft_menu_offsets)
+                    self._menu_gripper_close_mm_by_code = dict(draft_menu_gripper)
+                    self._menu_gripper_open_mm_by_code = dict(draft_menu_gripper_open)
+                    self._menu_label_by_code = dict(draft_menu_labels)
+                    saved_menu_offsets = dict(self._menu_xyz_offsets_by_code)
+                    saved_menu_gripper = dict(self._menu_gripper_close_mm_by_code)
+                    saved_menu_gripper_open = dict(self._menu_gripper_open_mm_by_code)
+                    saved_menu_labels = dict(self._menu_label_by_code)
+                    draft_menu_offsets = dict(saved_menu_offsets)
+                    draft_menu_gripper = dict(saved_menu_gripper)
+                    draft_menu_gripper_open = dict(saved_menu_gripper_open)
+                    draft_menu_labels = dict(saved_menu_labels)
+                    self._refresh_menu_xyz_offset_button_text()
+                    _refresh_all_rows(status_text="저장됨")
+                    _set_status(f"저장 완료: {ROBOT_ACTION_POSE_CONFIG_PATH}, {MENU_OFFSET_CONFIG_PATH}")
+                    self._append_voice_order_log(f"로봇 액션 포지션 설정 저장: {ROBOT_ACTION_POSE_CONFIG_PATH}")
+                    self._append_voice_order_log(f"메뉴별 XYZ/파지/오픈(mm) 설정 저장: {MENU_OFFSET_CONFIG_PATH}")
+                else:
+                    _refresh_all_rows(status_text="부분저장")
+                    _set_status(f"포지션 저장 완료, 메뉴 오프셋 저장 실패: {msg_menu}")
+                    QMessageBox.warning(dialog, "포지션 설정", f"포지션 저장은 완료했지만 메뉴 오프셋 저장에 실패했습니다.\n{msg_menu}", QMessageBox.Ok)
             else:
                 _set_status(str(save_state["msg"] or "저장 실패"))
                 QMessageBox.warning(dialog, "포지션 설정", str(save_state["msg"] or "저장 실패"), QMessageBox.Ok)
@@ -2920,10 +3919,7 @@ class App(QMainWindow, form):
             save_state["done"] = False
             save_state["ok"] = False
             save_state["msg"] = ""
-            table.setEnabled(False)
-            refresh_btn.setEnabled(False)
-            save_btn.setEnabled(False)
-            close_btn.setEnabled(False)
+            _set_dialog_enabled(False)
             _set_status("저장 중...")
             th = threading.Thread(
                 target=_save_worker,
@@ -3541,18 +4537,15 @@ class App(QMainWindow, form):
 
         y0 += ctrl_h + 8
         settings_box = getattr(self, "_bartender_settings_box", None)
-        settings_h = 102
+        settings_h = 84
         if settings_box is not None:
             settings_box.setGeometry(margin, y0, max(120, w - (margin * 2)), settings_h)
             inner_margin = 8
             inner_w = max(120, settings_box.width() - (inner_margin * 2))
-            offset_h = 22
             pose_h = 22
-            if self._bartender_offset_button is not None:
-                self._bartender_offset_button.setGeometry(inner_margin, inner_margin, inner_w, offset_h)
             if self._bartender_pose_button is not None:
-                self._bartender_pose_button.setGeometry(inner_margin, inner_margin + offset_h + 4, inner_w, pose_h)
-            row_y = inner_margin + offset_h + 4 + pose_h + 6
+                self._bartender_pose_button.setGeometry(inner_margin, inner_margin, inner_w, pose_h)
+            row_y = inner_margin + pose_h + 8
             if self._bartender_speed_title_label is not None:
                 self._bartender_speed_title_label.setGeometry(inner_margin, row_y, 152, 18)
             slider_x = inner_margin + 156

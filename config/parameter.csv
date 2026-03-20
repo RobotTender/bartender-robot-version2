@@ -2,7 +2,7 @@ name,v1,v2,v3,v4,v5,v6
 active_calibration_path,config/calibration/calib_matrix_260312_214034.txt
 active_calibration_path_1,config/calibration/calib_matrix_260312_214034.txt
 active_calibration_path_2,config/calibration/calib_matrix_260225_131257.txt
-home_posj,28.000000,-35.000000,100.000000,77.000000,63.000000,-154.000000
+home_posj,26.870000,-34.230000,99.420000,78.000000,65.780000,-152.600000
 top_status_robot_enabled,1
 top_status_vision2_enabled,1
 top_status_vision_enabled,1

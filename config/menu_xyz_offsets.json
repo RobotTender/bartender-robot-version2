@@ -5,9 +5,9 @@
       "offset_xyz_mm": [
         30.0,
         0.0,
-        0.0
+        -50.0
       ],
-      "gripper_close_mm": 41.0
+      "gripper_close_mm": 44.0
     },
     "beer": {
       "label": "맥주",

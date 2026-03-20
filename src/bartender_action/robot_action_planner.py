@@ -20,6 +20,7 @@ import json
 import math
 import os
 import sys
+import threading
 import time
 from typing import Any
 
@@ -71,6 +72,7 @@ CUP_DELIVERY_READY_POSJ = list(SERVICE_READY_POSJ)
 CUP_PICK_APPROACH_POSX = [430.0, -110.0, 300.0, 180.0, 0.0, 180.0]
 CUP_PICK_POSE_POSX = [430.0, -110.0, 225.0, 180.0, 0.0, 180.0]
 CUP_PICK_LIFT_POSX = [430.0, -110.0, 330.0, 180.0, 0.0, 180.0]
+PICK_LIFT_OUT_POSX = [99.555, 533.322, 701.878, 88.252, 89.415, -91.978]
 
 CUP_DELIVERY_APPROACH_POSX = [520.0, -20.0, 320.0, 180.0, 0.0, 180.0]
 CUP_DELIVERY_POSE_POSX = [520.0, -20.0, 235.0, 180.0, 0.0, 180.0]
@@ -79,9 +81,7 @@ GRIPPER_OPEN_MM_DEFAULT = 109.0
 GRIPPER_CLOSE_MM_DEFAULT = 41.0
 
 # 실시간 따르기 제어 파라미터
-LIVE_POUR_MOVE_SEND_RETRY_POLL_SEC = 0.01
 LIVE_POUR_VOLUME_POLL_SEC = 0.01
-LIVE_POUR_STAGE_TIMEOUT_SEC = 12.0
 LIVE_POUR_FINAL_WAIT_POLL_SEC = 0.01
 
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -107,6 +107,7 @@ RUNTIME_POSE_DEFAULTS = {
     "cup_pick_approach_posx": list(CUP_PICK_APPROACH_POSX),
     "cup_pick_pose_posx": list(CUP_PICK_POSE_POSX),
     "cup_pick_lift_posx": list(CUP_PICK_LIFT_POSX),
+    "pick_lift_out_posx": list(PICK_LIFT_OUT_POSX),
     "cup_delivery_ready_posj": list(CUP_DELIVERY_READY_POSJ),
     "cup_delivery_approach_posx": list(CUP_DELIVERY_APPROACH_POSX),
     "cup_delivery_pose_posx": list(CUP_DELIVERY_POSE_POSX),
@@ -634,6 +635,8 @@ def _canonical_runtime_pose_key(raw_key: Any):
         return "cup_pick_pose_posx"
     if key in ("cup_pick_fallback_lift", "cup_pick_lift"):
         return "cup_pick_lift_posx"
+    if key == "ingredient_pick_lift_out":
+        return "pick_lift_out_posx"
     if key == "cup_delivery_approach":
         return "cup_delivery_approach_posx"
     if key == "cup_delivery_pose":
@@ -975,108 +978,121 @@ def _read_current_volume_safe(api: PlannerSequenceApi, *, max_age_sec: float = 0
     return float(value), "ok"
 
 
-def _start_movej_stage_nonblocking(
+def _snapback_to_cheers_path(
     api: PlannerSequenceApi,
     *,
-    joints6,
-    label: str,
-    vel: float = 60.0,
-    acc: float = 60.0,
+    ingredient_code: str,
+    reverse_path: list[tuple[str, list[float]]],
+    cheers_posj,
 ):
-    backend = getattr(api, "backend", None)
-    if backend is None or (not hasattr(backend, "send_move_joint")):
-        # backend 비지원이면 기존 동기 movej로 폴백
-        api.movej_posj(joints6, label=label, vel=vel, acc=acc)
-        return False
-
-    vals = [float(v) for v in list(joints6)[:6]]
-    if len(vals) != 6:
-        raise RuntimeError(f"{label} 실패: movej 조인트 길이 오류")
-
-    append_step = getattr(api, "_append_step", None)
-    if callable(append_step):
-        append_step(
-            {
-                "op": "backend_call",
-                "label": str(label),
-                "method": "send_move_joint",
-                "args": vals,
-                "kwargs": {"vel": float(vel), "acc": float(acc)},
-                "enabled": True,
-            }
-        )
-
-    if not bool(getattr(api, "execute_enabled", True)):
-        append_log = getattr(api, "_append_log", None)
-        if callable(append_log):
-            append_log(f"{label}(계획)")
-        return False
-
-    call_with_retry = getattr(backend, "_call_with_retry", None)
-    if callable(call_with_retry):
-        ok, msg = call_with_retry(
-            lambda: backend.send_move_joint(*vals, vel=float(vel), acc=float(acc)),
-            timeout_sec=5.0,
-            poll_sec=LIVE_POUR_MOVE_SEND_RETRY_POLL_SEC,
-        )
-    else:
-        ok, msg = backend.send_move_joint(*vals, vel=float(vel), acc=float(acc))
-    if not ok:
-        raise RuntimeError(f"{label} 실패: {msg}")
-
-    append_log = getattr(api, "_append_log", None)
-    if callable(append_log):
-        append_log(f"{label}(J={','.join(f'{v:.1f}' for v in vals)})")
-    return True
+    movesj_fn = getattr(api, "movesj_posj", None)
+    if not callable(movesj_fn):
+        raise RuntimeError(f"[{ingredient_code}] 스냅복귀 실패: movesj_posj 미지원")
+    path = [list(joints) for _name, joints in list(reverse_path)]
+    path.append(list(cheers_posj))
+    movesj_fn(path, label=f"[{ingredient_code}] 스냅복귀 movesj", vel=120.0, acc=120.0)
 
 
-def _wait_for_stage_completion_or_volume_target(
+def _run_movesx_path_with_volume_trigger(
     api: PlannerSequenceApi,
     *,
+    ingredient_code: str,
+    path_name: str,
+    joints_path,
     target_volume_ml: float,
+    vel: float,
+    acc: float,
     poll_sec: float = LIVE_POUR_VOLUME_POLL_SEC,
-    stage_timeout_sec: float = LIVE_POUR_STAGE_TIMEOUT_SEC,
 ):
+    movesx_from_posj = getattr(api, "movesx_from_posj_path", None)
+    if not callable(movesx_from_posj):
+        raise RuntimeError(f"[{ingredient_code}] {path_name} 실패: movesx_from_posj_path 미지원")
     backend = getattr(api, "backend", None)
-    if backend is None:
-        return False, None
+    if backend is None or (not hasattr(backend, "send_motion_stop_async")):
+        raise RuntimeError(f"[{ingredient_code}] {path_name} 실패: motion_stop 미지원")
+    if not isinstance(joints_path, (list, tuple)) or len(joints_path) < 2:
+        raise RuntimeError(f"[{ingredient_code}] {path_name} 실패: movesx 경로(2점 이상) 필요")
 
-    poll_s = max(0.01, float(poll_sec))
-    timeout_s = max(0.5, float(stage_timeout_sec))
+    stop_watch = threading.Event()
+    reached = threading.Event()
+    state = {"last_volume": None, "stop_error": ""}
 
-    saw_busy = False
-    arm_deadline = time.monotonic() + 1.5
-    while time.monotonic() <= arm_deadline:
+    def _watch_volume_and_trigger():
+        while not stop_watch.is_set():
+            volume_now, _msg = _read_current_volume_safe(api, max_age_sec=0.8)
+            if volume_now is not None:
+                state["last_volume"] = float(volume_now)
+                if float(state["last_volume"]) >= float(target_volume_ml):
+                    ok_stop, msg_stop = backend.send_motion_stop_async(stop_mode=2)
+                    if not ok_stop:
+                        state["stop_error"] = str(msg_stop or "정지 실패")
+                    reached.set()
+                    break
+            time.sleep(max(0.01, float(poll_sec)))
+
+    watcher = threading.Thread(
+        target=_watch_volume_and_trigger,
+        daemon=True,
+        name=f"live-pour-watch-{ingredient_code}-{path_name}",
+    )
+    watcher.start()
+
+    move_exc = None
+    try:
+        movesx_from_posj(
+            [list(v) for v in list(joints_path)],
+            label=f"[{ingredient_code}] {path_name}",
+            vel=float(vel),
+            acc=float(acc),
+        )
+    except Exception as exc:
+        move_exc = exc
+    finally:
+        stop_watch.set()
         try:
-            busy_now = bool(backend.is_busy()) if hasattr(backend, "is_busy") else False
+            watcher.join(timeout=0.05)
         except Exception:
-            busy_now = False
-        if busy_now:
-            saw_busy = True
-            break
-        time.sleep(0.01)
+            pass
 
-    last_volume = None
-    deadline = time.monotonic() + timeout_s
-    while time.monotonic() <= deadline:
-        volume_now, _msg = _read_current_volume_safe(api, max_age_sec=0.8)
-        if volume_now is not None:
-            last_volume = float(volume_now)
-            if float(last_volume) >= float(target_volume_ml):
-                return True, last_volume
+    stop_err = str(state.get("stop_error", "") or "").strip()
+    if stop_err:
+        raise RuntimeError(f"[{ingredient_code}] {path_name} 실패: 목표용량 도달 정지 실패({stop_err})")
+    if move_exc is not None and (not reached.is_set()):
+        raise move_exc
+    return bool(reached.is_set()), state.get("last_volume")
 
+
+def _estimate_reached_stage_index_from_current_posj(api: PlannerSequenceApi, joints_path):
+    backend = getattr(api, "backend", None)
+    if backend is None or (not hasattr(backend, "get_position_snapshot")):
+        return max(0, len(list(joints_path or [])) - 1)
+    try:
+        snapshot, _seen_at = backend.get_position_snapshot()
+    except Exception:
+        snapshot = None
+    if not isinstance(snapshot, (list, tuple)) or len(snapshot) < 1:
+        return max(0, len(list(joints_path or [])) - 1)
+    posj_now = snapshot[0]
+    if not isinstance(posj_now, (list, tuple)) or len(posj_now) < 6:
+        return max(0, len(list(joints_path or [])) - 1)
+    try:
+        now = [float(v) for v in list(posj_now)[:6]]
+    except Exception:
+        return max(0, len(list(joints_path or [])) - 1)
+    best_idx = 0
+    best_score = float("inf")
+    for idx, joints in enumerate(list(joints_path or [])):
+        if not isinstance(joints, (list, tuple)) or len(joints) < 6:
+            continue
         try:
-            busy_now = bool(backend.is_busy()) if hasattr(backend, "is_busy") else False
+            vals = [float(v) for v in list(joints)[:6]]
         except Exception:
-            busy_now = False
-        if busy_now:
-            saw_busy = True
-        elif saw_busy:
-            return False, last_volume
-
-        time.sleep(poll_s)
-
-    raise RuntimeError(f"movej 단계 완료 대기 타임아웃({timeout_s:.1f}s)")
+            continue
+        score = sum(abs(now[i] - vals[i]) for i in range(6))
+        if score < best_score:
+            best_score = float(score)
+            best_idx = int(idx)
+    return int(best_idx)
 
 
 def _execute_live_volume_feedback_pour_sequence(
@@ -1097,38 +1113,61 @@ def _execute_live_volume_feedback_pour_sequence(
     pour_diagonal_posj = _runtime_pose6(runtime_cfg, "pour_diagonal_posj", POUR_DIAGONAL_POSJ)
     pour_vertical_posj = _runtime_pose6(runtime_cfg, "pour_vertical_posj", POUR_VERTICAL_POSJ)
 
+    # Setup trajectories (원본 형태 유지)
+    p0 = list(pour_start_cheers_posj)
+    p1 = list(pour_start_cheers_posj)
+    p2 = list(pour_contact_posj)
+    p3 = list(pour_horizontal_posj)
+    p4 = list(pour_diagonal_posj)
+    p5 = list(pour_vertical_posj)
+    approach_path = [p0, p1, p2]
+    pour_path = [p2, p3, p4, p5]
     forward_path = [
-        ("contact", pour_contact_posj),
-        ("pour_horizontal", pour_horizontal_posj),
-        ("pour_diagonal", pour_diagonal_posj),
-        ("pour_vertical", pour_vertical_posj),
+        ("contact", p2),
+        ("pour_horizontal", p3),
+        ("pour_diagonal", p4),
+        ("pour_vertical", p5),
     ]
     reached_idx = len(forward_path) - 1
     last_volume = None
+    reached = False
 
-    for idx, (name, joints) in enumerate(forward_path):
-        _start_movej_stage_nonblocking(
+    reached_ap, volume_ap = _run_movesx_path_with_volume_trigger(
+        api,
+        ingredient_code=ingredient_code,
+        path_name="접근 movesx(approach_path)",
+        joints_path=approach_path,
+        target_volume_ml=target_ml,
+        vel=60.0,
+        acc=60.0,
+        poll_sec=LIVE_POUR_VOLUME_POLL_SEC,
+    )
+    if volume_ap is not None:
+        last_volume = float(volume_ap)
+    if reached_ap:
+        reached = True
+        reached_idx = 0
+        _emit_sequence_log(api, f"[{ingredient_code}] 목표용량 도달 감지(stage=contact)")
+    else:
+        reached_pour, volume_pour = _run_movesx_path_with_volume_trigger(
             api,
-            joints6=joints,
-            label=f"[{ingredient_code}] 따르기 {name}",
+            ingredient_code=ingredient_code,
+            path_name="따르기 movesx(pour_path)",
+            joints_path=pour_path,
+            target_volume_ml=target_ml,
             vel=60.0,
             acc=60.0,
-        )
-        reached, volume_now = _wait_for_stage_completion_or_volume_target(
-            api,
-            target_volume_ml=target_ml,
             poll_sec=LIVE_POUR_VOLUME_POLL_SEC,
-            stage_timeout_sec=LIVE_POUR_STAGE_TIMEOUT_SEC,
         )
-        if volume_now is not None:
-            last_volume = float(volume_now)
-        if reached:
-            reached_idx = idx
-            _emit_sequence_log(api, f"[{ingredient_code}] 목표용량 도달 감지(stage={name})")
-            api.motion_stop(label=f"[{ingredient_code}] 목표용량 도달 정지")
-            break
-        reached_idx = idx
-    else:
+        if volume_pour is not None:
+            last_volume = float(volume_pour)
+        if reached_pour:
+            reached = True
+            reached_idx = _estimate_reached_stage_index_from_current_posj(api, pour_path)
+            stage_name = str(forward_path[min(max(0, reached_idx), len(forward_path) - 1)][0])
+            _emit_sequence_log(api, f"[{ingredient_code}] 목표용량 도달 감지(stage={stage_name})")
+
+    if not reached:
         reached_idx = len(forward_path) - 1
         deadline = time.monotonic() + 5.0
         while time.monotonic() <= deadline:
@@ -1136,18 +1175,22 @@ def _execute_live_volume_feedback_pour_sequence(
             if volume_now is not None:
                 last_volume = float(volume_now)
                 if float(last_volume) >= float(target_ml):
+                    reached = True
                     break
             time.sleep(LIVE_POUR_FINAL_WAIT_POLL_SEC)
-        else:
+        if not reached:
             try:
                 api.motion_stop(label=f"[{ingredient_code}] 목표 미도달 안전정지")
             except Exception:
                 pass
             _emit_sequence_log(api, f"[{ingredient_code}] 목표용량 미도달 안전복귀 시작", level="warning")
             reverse_path = list(reversed(forward_path[: reached_idx + 1]))
-            for name, joints in reverse_path:
-                api.movej_posj(joints, label=f"[{ingredient_code}] 스냅복귀 {name}", vel=120.0, acc=120.0)
-            api.movej_posj(pour_start_cheers_posj, label=f"[{ingredient_code}] 스냅복귀 cheers", vel=120.0, acc=120.0)
+            _snapback_to_cheers_path(
+                api,
+                ingredient_code=ingredient_code,
+                reverse_path=reverse_path,
+                cheers_posj=pour_start_cheers_posj,
+            )
             if last_volume is None:
                 _emit_sequence_log(api, f"[{ingredient_code}] 목표용량 미도달(현재용량 읽기 실패)", level="error")
                 raise RuntimeError(f"[{ingredient_code}] 목표용량 미도달(현재용량 읽기 실패 / 목표 {target_ml:.1f}ml)")
@@ -1157,11 +1200,13 @@ def _execute_live_volume_feedback_pour_sequence(
                 level="error",
             )
             raise RuntimeError(f"[{ingredient_code}] 목표용량 미도달({last_volume:.1f}/{target_ml:.1f}ml)")
-        api.motion_stop(label=f"[{ingredient_code}] 목표용량 도달 정지")
     reverse_path = list(reversed(forward_path[: reached_idx + 1]))
-    for name, joints in reverse_path:
-        api.movej_posj(joints, label=f"[{ingredient_code}] 스냅복귀 {name}", vel=120.0, acc=120.0)
-    api.movej_posj(pour_start_cheers_posj, label=f"[{ingredient_code}] 스냅복귀 cheers", vel=120.0, acc=120.0)
+    _snapback_to_cheers_path(
+        api,
+        ingredient_code=ingredient_code,
+        reverse_path=reverse_path,
+        cheers_posj=pour_start_cheers_posj,
+    )
     _emit_sequence_log(api, f"[{ingredient_code}] 실시간 따르기 종료")
 
 
@@ -1217,6 +1262,7 @@ def _append_ingredient_sequence(api: PlannerSequenceApi, row: dict, seq_index: i
     pick_approach_offset = _runtime_offset_xyz(runtime_cfg, "pick_approach_offset", [0.0, -50.0, 0.0])
     pick_grasp_offset = _runtime_offset_xyz(runtime_cfg, "pick_grasp_offset", [0.0, 0.0, 0.0])
     pick_lift_offset = _runtime_offset_xyz(runtime_cfg, "pick_lift_offset", [0.0, 0.0, 100.0])
+    pick_lift_out_posx = _runtime_pose6(runtime_cfg, "pick_lift_out_posx", PICK_LIFT_OUT_POSX)
     place_offset = _runtime_offset_xyz(runtime_cfg, "place_offset", [0.0, 0.0, 0.0])
     retreat_offset = _runtime_offset_xyz(runtime_cfg, "retreat_offset", [-20.0, -50.0, 0.0])
     _emit_sequence_log(api, f"[{ingredient_code}] 재료 시퀀스 시작(누적목표={target_volume_text})")
@@ -1260,13 +1306,13 @@ def _append_ingredient_sequence(api: PlannerSequenceApi, row: dict, seq_index: i
         dy_mm=float(pick_lift_offset[1]),
         dz_mm=float(pick_lift_offset[2]),
     )
-
     api.movel_posx(pick_approach_posx, label=f"[{ingredient_code}] 병 접근(target_1)")
     api.movel_posx(pick_grasp_posx, label=f"[{ingredient_code}] 병 파지(target_2)", vel=40.0, acc=40.0)
     api.gripper(gripper_close_mm, label=f"[{ingredient_code}] 병 파지")
     api.wait_sec(3.0, label=f"[{ingredient_code}] 병 파지 대기")
     api.movel_posx(pick_lift_posx, label=f"[{ingredient_code}] 병 파지 후 업(target_3)", vel=40.0, acc=40.0)
-    api.movej_posj(service_ready_posj, label=f"[{ingredient_code}] 병 파지 후 준비자세")
+    api.movel_posx(pick_lift_out_posx, label=f"[{ingredient_code}] 병 파지 후 업 이탈(target_4)", vel=40.0, acc=40.0)
+    #api.movej_posj(service_ready_posj, label=f"[{ingredient_code}] 병 파지 후 준비자세")
     api.move_home(label=f"[{ingredient_code}] 병 파지 후 홈 이동")
     _emit_sequence_log(api, f"[{ingredient_code}] [1] PICK 종료")
 
@@ -1323,11 +1369,17 @@ def _append_ingredient_sequence(api: PlannerSequenceApi, row: dict, seq_index: i
         dz_mm=float(retreat_offset[2]),
     )
 
+    # 픽 거꾸로 시퀸스
     api.movej_posj(service_ready_posj, label=f"[{ingredient_code}] 원위치 복귀 준비")
-    api.movel_posx(place_posx, label=f"[{ingredient_code}] 원위치 안착(target_2)", vel=40.0, acc=40.0)
+    api.movel_posx(pick_lift_out_posx, label=f"[{ingredient_code}] 병 파지 후 업 이탈(target_4)", vel=40.0, acc=40.0)
+    api.movel_posx(pick_lift_posx, label=f"[{ingredient_code}] 병 파지 후 업(target_3)", vel=40.0, acc=40.0)
+    api.movel_posx(pick_grasp_posx, label=f"[{ingredient_code}] 병 파지(target_2)", vel=40.0, acc=40.0)
+
+    #api.movel_posx(place_posx, label=f"[{ingredient_code}] 원위치 안착(target_2)", vel=40.0, acc=40.0)
     api.gripper(GRIPPER_OPEN_MM_DEFAULT, label=f"[{ingredient_code}] 병 놓기")
     api.wait_sec(2.0, label=f"[{ingredient_code}] 릴리즈 대기")
-    api.movel_posx(retreat_posx, label=f"[{ingredient_code}] 원위치 이탈(target_1)", vel=40.0, acc=40.0)
+    #api.movel_posx(retreat_posx, label=f"[{ingredient_code}] 원위치 이탈(target_1)", vel=40.0, acc=40.0)
+    api.movel_posx(pick_approach_posx, label=f"[{ingredient_code}] 병 접근(target_1)")
     api.movej_posj(service_ready_posj, label=f"[{ingredient_code}] 다음 재료 준비")
     _emit_sequence_log(api, f"[{ingredient_code}] [3] RETURN 종료")
     _emit_sequence_log(api, f"[{ingredient_code}] 재료 시퀀스 종료")

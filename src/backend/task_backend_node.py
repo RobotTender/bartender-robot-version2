@@ -736,6 +736,65 @@ class NativeRobotActionApi:
             raise RuntimeError(f"{label} 실패: movej 반환값={ret}")
         wait(0.5)
 
+    def _exec_movesj_native(self, joints_path, label: str, vel=None, acc=None):
+        from DSR_ROBOT2 import movesj, wait
+        from DR_common2 import posj
+
+        if not isinstance(joints_path, (list, tuple)) or len(joints_path) == 0:
+            raise RuntimeError(f"{label} 실패: movesj 경로가 비어 있습니다.")
+        path = []
+        for idx, joints6 in enumerate(list(joints_path)):
+            joints = [float(v) for v in list(joints6)[:6]]
+            if len(joints) != 6:
+                raise RuntimeError(f"{label} 실패: 경로[{idx}] J1~J6 길이가 올바르지 않습니다.")
+            path.append(posj(*joints))
+        self._check_motion(label, max_state_age_sec=2.0)
+        eff_vel = VELOCITY if vel is None else float(vel)
+        eff_acc = ACC if acc is None else float(acc)
+        ret = movesj(path, vel=eff_vel, acc=eff_acc)
+        if self.robot_controller is not None and (not self.robot_controller._motion_ok(ret, f"movesj({label})")):
+            raise RuntimeError(f"{label} 실패: movesj 반환값={ret}")
+        wait(0.5)
+
+    def _joints_to_posx_native(self, joints6):
+        from DSR_ROBOT2 import fkin
+
+        joints = [float(v) for v in list(joints6)[:6]]
+        if len(joints) != 6:
+            raise RuntimeError("조인트->posx 변환 실패: J1~J6 길이 오류")
+        try:
+            fk = fkin(joints, ref=0)
+        except Exception:
+            try:
+                from DR_common2 import posj
+                fk = fkin(posj(*joints), ref=0)
+            except Exception as exc:
+                raise RuntimeError(f"조인트->posx 변환 실패(fkin): {exc}") from exc
+        vals = [float(v) for v in list(fk)[:6]]
+        if len(vals) != 6:
+            raise RuntimeError("조인트->posx 변환 실패: fkin 결과 길이 오류")
+        return vals
+
+    def _exec_movesx_native(self, pose_path, label: str, vel=None, acc=None):
+        from DSR_ROBOT2 import movesx, wait
+        from DR_common2 import posx
+
+        if not isinstance(pose_path, (list, tuple)) or len(pose_path) == 0:
+            raise RuntimeError(f"{label} 실패: movesx 경로가 비어 있습니다.")
+        path = []
+        for idx, pose6 in enumerate(list(pose_path)):
+            vals = [float(v) for v in list(pose6)[:6]]
+            if len(vals) != 6:
+                raise RuntimeError(f"{label} 실패: 경로[{idx}] XYZABC 길이가 올바르지 않습니다.")
+            path.append(posx(vals))
+        self._check_motion(label, max_state_age_sec=2.0)
+        eff_vel = VELOCITY if vel is None else float(vel)
+        eff_acc = ACC if acc is None else float(acc)
+        ret = movesx(path, vel=eff_vel, acc=eff_acc)
+        if self.robot_controller is not None and (not self.robot_controller._motion_ok(ret, f"movesx({label})")):
+            raise RuntimeError(f"{label} 실패: movesx 반환값={ret}")
+        wait(0.5)
+
     def _exec_amovel_native(self, target6, label: str, vel=None, acc=None):
         from DSR_ROBOT2 import amovel
         from DR_common2 import posx
@@ -995,6 +1054,75 @@ class NativeRobotActionApi:
             return
         self._exec_amovej_native(vals, label=label, vel=vel, acc=acc)
         self._append_log(f"{label}(J={','.join(f'{v:.1f}' for v in vals)})")
+
+    def movesj_posj(self, joints_path, label: str = "조인트 경로 이동", enabled: bool = True, timeout_sec: float | None = None, vel: float | None = None, acc: float | None = None):
+        if not isinstance(joints_path, (list, tuple)) or len(joints_path) == 0:
+            raise RuntimeError("movesj_posj는 1개 이상 경로가 필요합니다.")
+        norm_path = []
+        for idx, joints6 in enumerate(list(joints_path)):
+            vals = [float(v) for v in list(joints6)[:6]]
+            if len(vals) != 6:
+                raise RuntimeError(f"movesj_posj 경로[{idx}]는 6개 조인트 값이 필요합니다.")
+            norm_path.append(vals)
+        kwargs = {}
+        if vel is not None:
+            kwargs["vel"] = float(vel)
+        if acc is not None:
+            kwargs["acc"] = float(acc)
+        step = {
+            "op": "backend_call",
+            "label": str(label),
+            "method": "send_move_joint",
+            "args": norm_path[-1],
+            "kwargs": kwargs,
+            "enabled": bool(enabled),
+        }
+        if timeout_sec is not None:
+            step["timeout_sec"] = float(timeout_sec)
+        self._append_step(step)
+        if not bool(enabled):
+            self._append_log(f"{label}(비활성)")
+            return
+        if not self.execute_enabled:
+            self._append_log(f"{label}(계획 N={len(norm_path)})")
+            return
+        self._exec_movesj_native(norm_path, label=label, vel=vel, acc=acc)
+        self._append_log(f"{label}(N={len(norm_path)})")
+
+    def movesx_from_posj_path(self, joints_path, label: str = "카테시안 경로 이동", enabled: bool = True, timeout_sec: float | None = None, vel: float | None = None, acc: float | None = None):
+        if not isinstance(joints_path, (list, tuple)) or len(joints_path) == 0:
+            raise RuntimeError("movesx_from_posj_path는 1개 이상 경로가 필요합니다.")
+        norm_joints = []
+        for idx, joints6 in enumerate(list(joints_path)):
+            vals = [float(v) for v in list(joints6)[:6]]
+            if len(vals) != 6:
+                raise RuntimeError(f"movesx_from_posj_path 경로[{idx}]는 6개 조인트 값이 필요합니다.")
+            norm_joints.append(vals)
+        kwargs = {}
+        if vel is not None:
+            kwargs["vel"] = float(vel)
+        if acc is not None:
+            kwargs["acc"] = float(acc)
+        step = {
+            "op": "backend_call",
+            "label": str(label),
+            "method": "send_move_joint",
+            "args": norm_joints[-1],
+            "kwargs": kwargs,
+            "enabled": bool(enabled),
+        }
+        if timeout_sec is not None:
+            step["timeout_sec"] = float(timeout_sec)
+        self._append_step(step)
+        if not bool(enabled):
+            self._append_log(f"{label}(비활성)")
+            return
+        if not self.execute_enabled:
+            self._append_log(f"{label}(계획 N={len(norm_joints)})")
+            return
+        pose_path = [self._joints_to_posx_native(j) for j in norm_joints]
+        self._exec_movesx_native(pose_path, label=label, vel=vel, acc=acc)
+        self._append_log(f"{label}(N={len(norm_joints)})")
 
     # backward compatibility aliases
     def movel(self, pose6, label: str = "카테시안 이동", enabled: bool = True, timeout_sec: float | None = None, vel: float | None = None, acc: float | None = None):
@@ -4654,6 +4782,27 @@ class RobotBackend:
         if self.robot_controller is not None:
             self.robot_controller._log_error(f"[정지] {merged}")
         return False, merged
+
+    def send_motion_stop_async(self, stop_mode: int = 2):
+        if not self._ready_event.is_set():
+            return False, "백엔드 준비 중입니다."
+        mode = int(stop_mode)
+
+        def _worker():
+            ok_stop, msg_stop = self._call_move_stop(stop_mode=mode, timeout_sec=0.35)
+            if self.robot_controller is None:
+                return
+            if ok_stop:
+                self.robot_controller._log_info(
+                    f"[정지] 비동기 요청 완료(stop_mode={mode}): {msg_stop}"
+                )
+            else:
+                self.robot_controller._log_error(
+                    f"[정지] 비동기 요청 실패(stop_mode={mode}): {msg_stop}"
+                )
+
+        threading.Thread(target=_worker, daemon=True, name=f"motion-stop-async-{mode}").start()
+        return True, f"모션정지 비동기 요청 전송(stop_mode={mode})"
 
     def is_ready(self):
         return self._ready_event.is_set()

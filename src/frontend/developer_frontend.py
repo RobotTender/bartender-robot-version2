@@ -298,6 +298,7 @@ ROBOT_ACTION_POSE_DEFAULTS = {
         "cup_pick_approach_posx": [430.0, -110.0, 300.0, 180.0, 0.0, 180.0],
         "cup_pick_pose_posx": [430.0, -110.0, 225.0, 180.0, 0.0, 180.0],
         "cup_pick_lift_posx": [430.0, -110.0, 330.0, 180.0, 0.0, 180.0],
+        "pick_lift_out_posx": [99.555, 533.322, 701.878, 88.252, 89.415, -91.978],
         "cup_delivery_ready_posj": [28.0, -35.0, 100.0, 77.0, 63.0, -154.0],
         "cup_delivery_approach_posx": [520.0, -20.0, 320.0, 180.0, 0.0, 180.0],
         "cup_delivery_pose_posx": [520.0, -20.0, 235.0, 180.0, 0.0, 180.0],
@@ -325,6 +326,7 @@ ROBOT_ACTION_POSE_LEGACY_POSE_KEY_MAP = {
     "cup_pick_pose": "cup_pick_pose_posx",
     "cup_pick_fallback_lift": "cup_pick_lift_posx",
     "cup_pick_lift": "cup_pick_lift_posx",
+    "ingredient_pick_lift_out": "pick_lift_out_posx",
     "cup_delivery_approach": "cup_delivery_approach_posx",
     "cup_delivery_pose": "cup_delivery_pose_posx",
 }
@@ -409,6 +411,15 @@ ROBOT_ACTION_POSE_ROW_DEFS = [
         "var_name": "pick_lift_offset",
         "label": "병 파지 후 업(target_3) 오프셋",
         "desc": "비전 타겟 기준 상대 오프셋(mm)",
+    },
+    {
+        "section": "[1] PICK",
+        "type": "posx",
+        "config_group": "poses",
+        "config_key": "pick_lift_out_posx",
+        "var_name": "pick_lift_out_posx",
+        "label": "병 파지 후 업 이탈(target_4) 절대좌표",
+        "desc": "절대 posx(mm/deg), 비전 오프셋 미사용",
     },
     {
         "section": "[2] POUR",

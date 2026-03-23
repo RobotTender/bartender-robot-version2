@@ -56,7 +56,10 @@ from PyQt5.QtWidgets import (
     QTabWidget,
     QWidget,
 )
-from PyQt5 import uic
+try:
+    from .developer_frontend_ui_runtime import Ui_MainWindow
+except Exception:
+    from developer_frontend_ui_runtime import Ui_MainWindow
 
 try:
     from rcl_interfaces.msg import Log as RosLogMsg
@@ -128,7 +131,7 @@ warnings.filterwarnings(
 from task_backend_node import RobotBackend, ROBOT_ID, HOME_POSJ
 from order_integration.openai_tts import synthesize_openai_tts
 
-form = uic.loadUiType(os.path.join(PROJECT_ROOT, "assets", "frontend", "developer_frontend.ui"))[0]
+form = Ui_MainWindow
 UI_FONT_FAMILY = "Noto Sans CJK KR"
 UI_FONT_SIZE = 9
 UI_TERMINAL_FONT_SIZE = max(6, int(os.environ.get("UI_TERMINAL_FONT_SIZE", "9")))
@@ -160,15 +163,7 @@ YOLO_AUTO_LAUNCH_ALWAYS = os.environ.get("YOLO_AUTO_LAUNCH_ALWAYS", "0") == "1"
 YOLO_AUTO_LAUNCH_CMD = os.environ.get("YOLO_AUTO_LAUNCH_CMD", "").strip()
 CALIB_HELPER_AUTO_LAUNCH = os.environ.get("CALIB_HELPER_AUTO_LAUNCH", "0") == "1"
 CALIB_HELPER_CMD = os.environ.get("CALIB_HELPER_CMD", "").strip()
-FRONTEND_UI_PERF_LOG_PATH = os.path.abspath(
-    os.environ.get("FRONTEND_UI_PERF_LOG_PATH", os.path.join(PROJECT_ROOT, "logs", "frontend_ui_perf.log"))
-)
-
 POSITION_STALE_SEC = float(os.environ.get("UI_POSITION_STALE_SEC", "2.0"))
-UI_TICK_WARN_MS = max(20.0, float(os.environ.get("UI_TICK_WARN_MS", "120.0")))
-UI_TICK_WARN_COOLDOWN_SEC = max(0.5, float(os.environ.get("UI_TICK_WARN_COOLDOWN_SEC", "1.0")))
-UI_TICK_TRACE_ENABLED = os.environ.get("UI_TICK_TRACE", "0") == "1"
-UI_TICK_TRACE_MIN_MS = max(0.0, float(os.environ.get("UI_TICK_TRACE_MIN_MS", "0.0")))
 VISION_DECODE_MIN_INTERVAL_MS = max(
     0.0, float(os.environ.get("VISION_DECODE_MIN_INTERVAL_MS", "16.0"))
 )
@@ -198,7 +193,7 @@ JOINT_INPUT_LIMITS_DEG = (
     (-360.0, 360.0),  # J5
     (-360.0, 360.0),  # J6
 )
-LOG_AREA_SHIFT_Y = 4
+LOG_AREA_SHIFT_Y = 0
 UI_USE_DESIGN_GEOMETRY = os.environ.get("UI_USE_DESIGN_GEOMETRY", "0") == "1"
 MODE_SWITCH_GRACE_SEC = float(os.environ.get("MODE_SWITCH_GRACE_SEC", "4.0"))
 VOICE_ORDER_PANEL_GAP = 10
@@ -210,8 +205,10 @@ DASHBOARD_BOTTOM_EXTRA_MARGIN = 0
 DASHBOARD_COL_WIDTHS = (531, 531, 840)
 DASHBOARD_TOP_PANEL_HEIGHT = 600
 DASHBOARD_BOTTOM_PANEL_HEIGHT = 600
-DASHBOARD_LOG_HEIGHT_RATIO = 0.25
-DASHBOARD_LOG_MIN_HEIGHT = 240
+DASHBOARD_LOG_HEIGHT_RATIO = 0.20
+DASHBOARD_LOG_MIN_HEIGHT = 190
+UI_LAYOUT_BASE_WIDTH = 2560
+UI_LAYOUT_BASE_HEIGHT = 1600
 BARTENDER_SEQUENCE_STEPS = [
     ("boot", "시스템 준비"),
     ("mode", "모드 확인"),
@@ -1075,18 +1072,6 @@ class App(QMainWindow, form):
         self._closing = False
         self._ui_tick_error_last_at = {}
         self._ui_tick_slow_last_at = {}
-        self._vision_render_stall_last_log_at_1 = 0.0
-        self._vision_render_stall_last_log_at_2 = 0.0
-        self._vision_render_trace_last_log_at_1 = 0.0
-        self._vision_render_trace_last_log_at_2 = 0.0
-        self._ui_perf_log_path = str(FRONTEND_UI_PERF_LOG_PATH or "").strip()
-        self._ui_perf_log_lock = threading.Lock()
-        if self._ui_perf_log_path:
-            try:
-                os.makedirs(os.path.dirname(self._ui_perf_log_path), exist_ok=True)
-            except Exception:
-                self._ui_perf_log_path = ""
-
         self.backend = backend
         self._auto_start_backend = bool(auto_start_backend)
         self._backend_thread = None
@@ -1118,6 +1103,11 @@ class App(QMainWindow, form):
         self._top_status_state_cache = {}
         self._robot_controls_enabled_cache = None
         self._dashboard_resize_guard = False
+        self._resize_layout_applied_once = False
+        self._dashboard_layout_scale = 1.0
+        self._ui_font_scale_applied = 1.0
+        self._log_follow_enabled = True
+        self._log_follow_toggle = None
         self._voice_panel_shift_applied = False
         self._voice_panel_shift_dx = 0
         self._voice_panel_layout_rect = None
@@ -1206,6 +1196,11 @@ class App(QMainWindow, form):
         self._bartender_manual_mode_button = None
         self._bartender_auto_mode_button = None
         self._bartender_settings_box = None
+        self._bartender_settings_title_label = None
+        self._bartender_drive_box = None
+        self._bartender_drive_title_label = None
+        self._bartender_progress_box = None
+        self._bartender_progress_title_label = None
         self._bartender_offset_button = None
         self._bartender_pose_button = None
         self._bartender_speed_title_label = None
@@ -1416,7 +1411,6 @@ class App(QMainWindow, form):
         self._vision_cb_group_1 = ReentrantCallbackGroup() if ReentrantCallbackGroup is not None else None
         self._vision_cb_group_2 = ReentrantCallbackGroup() if ReentrantCallbackGroup is not None else None
         self._vision_point_sub = None
-        self._vision_preview_sub = None
         self._vision_info_sub = None
         self._vision_info_sub_2 = None
         self._vision_image_topic_in_use = None
@@ -1789,16 +1783,28 @@ class App(QMainWindow, form):
             self._bartender_overview_panel = panel
 
         title = QLabel("바텐더 로봇", panel)
-        title.setFont(QFont(UI_FONT_FAMILY, 18, QFont.Bold))
+        title.setFont(QFont(UI_FONT_FAMILY, 26, QFont.Bold))
+        title.setStyleSheet("font-size: 18pt; font-weight: 800; color: #111827;")
         title.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         self._bartender_title_label = title
 
-        manual_btn = QPushButton("메뉴얼모드", panel)
-        auto_btn = QPushButton("오토모드", panel)
+        drive_box = QFrame(panel)
+        drive_box.setObjectName("bartender_drive_box")
+        drive_box.setStyleSheet(
+            "QFrame#bartender_drive_box { background: #f8fafc; border: 1px solid #cbd5e1; border-radius: 6px; }"
+        )
+        self._bartender_drive_box = drive_box
+        drive_title = QLabel("구동", drive_box)
+        drive_title.setStyleSheet("color: #1f2937; font-size: 9.8pt; font-weight: 800;")
+        drive_title.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self._bartender_drive_title_label = drive_title
+
+        manual_btn = QPushButton("메뉴얼모드", drive_box)
+        auto_btn = QPushButton("오토모드", drive_box)
         for btn in (manual_btn, auto_btn):
             btn.setCheckable(True)
             btn.setStyleSheet(
-                "QPushButton { background: #edf2f7; color: #1f2937; border: 1px solid #cbd5e1; border-radius: 4px; font-size: 8.8pt; font-weight: 700; }"
+                "QPushButton { background: #edf2f7; color: #1f2937; border: 1px solid #cbd5e1; border-radius: 4px; font-size: 10.2pt; font-weight: 700; }"
                 "QPushButton:checked { background: #1f6feb; color: #ffffff; border-color: #1f6feb; }"
             )
 
@@ -1817,17 +1823,21 @@ class App(QMainWindow, form):
             "QFrame#bartender_settings_box { background: #f8fafc; border: 1px solid #cbd5e1; border-radius: 6px; }"
         )
         self._bartender_settings_box = settings_box
+        settings_title = QLabel("세팅", settings_box)
+        settings_title.setStyleSheet("color: #1f2937; font-size: 9.8pt; font-weight: 800;")
+        settings_title.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self._bartender_settings_title_label = settings_title
 
         pose_btn = QPushButton("로봇 액션 포지션/재료 오프셋 설정", settings_box)
         pose_btn.setStyleSheet(
-            "QPushButton { background: #eef2ff; color: #1f2937; border: 1px solid #c7d2fe; border-radius: 4px; font-size: 8.8pt; font-weight: 700; }"
+            "QPushButton { background: #eef2ff; color: #1f2937; border: 1px solid #c7d2fe; border-radius: 4px; font-size: 10.2pt; font-weight: 700; }"
             "QPushButton:hover { background: #e0e7ff; }"
         )
         pose_btn.clicked.connect(self._open_robot_action_pose_dialog)
         self._bartender_pose_button = pose_btn
 
         speed_title = QLabel("로봇 시퀀스 속도 (0~100%)", settings_box)
-        speed_title.setStyleSheet("color: #1f3b63; font-size: 8.5pt; font-weight: 700;")
+        speed_title.setStyleSheet("color: #1f3b63; font-size: 8.6pt; font-weight: 700;")
         speed_title.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         self._bartender_speed_title_label = speed_title
 
@@ -1842,13 +1852,13 @@ class App(QMainWindow, form):
         self._bartender_speed_slider = speed_slider
 
         speed_value = QLabel(settings_box)
-        speed_value.setStyleSheet("color: #1f3b63; font-size: 9pt; font-weight: 700;")
+        speed_value.setStyleSheet("color: #1f3b63; font-size: 10.4pt; font-weight: 700;")
         speed_value.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         self._bartender_speed_value_label = speed_value
 
-        start_btn = QPushButton("메뉴얼 시퀀스 시작", panel)
+        start_btn = QPushButton("메뉴얼 시퀀스 시작", drive_box)
         start_btn.setStyleSheet(
-            "QPushButton { background: #166534; color: #ffffff; border: 1px solid #166534; border-radius: 4px; font-size: 9.2pt; font-weight: 800; }"
+            "QPushButton { background: #166534; color: #ffffff; border: 1px solid #166534; border-radius: 4px; font-size: 11.8pt; font-weight: 800; }"
             "QPushButton:hover { background: #14532d; }"
             "QPushButton:disabled { background: #94a3b8; border-color: #94a3b8; color: #f8fafc; }"
         )
@@ -1857,28 +1867,39 @@ class App(QMainWindow, form):
 
         robot_action_test_btn = QPushButton("7. 로봇 동작만 테스트", panel)
         robot_action_test_btn.setStyleSheet(
-            "QPushButton { background: #0f766e; color: #ffffff; border: 1px solid #0f766e; border-radius: 4px; font-size: 8.8pt; font-weight: 800; }"
+            "QPushButton { background: #0f766e; color: #ffffff; border: 1px solid #0f766e; border-radius: 4px; font-size: 10.2pt; font-weight: 800; }"
             "QPushButton:hover { background: #115e59; }"
             "QPushButton:disabled { background: #94a3b8; border-color: #94a3b8; color: #f8fafc; }"
         )
         robot_action_test_btn.clicked.connect(self._run_bartender_robot_action_only_sequence)
         self._bartender_robot_action_test_button = robot_action_test_btn
 
-        status_label = QLabel("상태: 대기", panel)
-        status_label.setStyleSheet("font-size: 10pt; font-weight: 800; color: #1f2937;")
+        status_label = QLabel("상태: 대기", drive_box)
+        status_label.setStyleSheet("font-size: 11.8pt; font-weight: 800; color: #1f2937;")
         status_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         self._bartender_status_label = status_label
 
-        hint_label = QLabel(panel)
+        hint_label = QLabel(drive_box)
         hint_label.setWordWrap(True)
         hint_label.setStyleSheet("font-size: 8.8pt; font-weight: 600; color: #475569;")
         hint_label.setAlignment(Qt.AlignLeft | Qt.AlignTop)
         self._bartender_mode_hint_label = hint_label
 
-        seq_area = QFrame(panel)
+        progress_box = QFrame(panel)
+        progress_box.setObjectName("bartender_progress_box")
+        progress_box.setStyleSheet(
+            "QFrame#bartender_progress_box { background: #f8fafc; border: 1px solid #cbd5e1; border-radius: 6px; }"
+        )
+        self._bartender_progress_box = progress_box
+        progress_title = QLabel("진행상태", progress_box)
+        progress_title.setStyleSheet("color: #1f2937; font-size: 9.8pt; font-weight: 800;")
+        progress_title.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self._bartender_progress_title_label = progress_title
+
+        seq_area = QFrame(progress_box)
         seq_area.setObjectName("bartender_sequence_area")
         seq_area.setStyleSheet(
-            "QFrame#bartender_sequence_area { background: #f8fafc; border: 1px solid #cbd5e1; border-radius: 6px; }"
+            "QFrame#bartender_sequence_area { background: transparent; border: none; }"
         )
         self._bartender_sequence_area = seq_area
 
@@ -1888,7 +1909,7 @@ class App(QMainWindow, form):
             lbl = QLabel(f"{idx}. {step_label}", seq_area)
             lbl.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
             lbl.setStyleSheet(
-                "background: #ffffff; border: 1px solid #dbe2ea; border-radius: 4px; color: #334155; font-size: 8.7pt; font-weight: 700;"
+                "background: #ffffff; border: 1px solid #dbe2ea; border-radius: 4px; color: #334155; font-size: 11.6pt; font-weight: 700;"
             )
             self._bartender_sequence_widgets[str(step_key)] = lbl
             self._bartender_sequence_state[str(step_key)] = "pending"
@@ -1982,6 +2003,7 @@ class App(QMainWindow, form):
     def _update_bartender_mode_ui(self):
         self._bartender_auto_ready = self._is_bartender_auto_ready()
         self._apply_device_toggle_lock_by_mode()
+        ts = self._ui_text_scale()
         # manual/auto 동일 조건: 오토모드에서는 WEB UI 보이스 버튼으로 시작만 허용한다.
         auto_unlock = bool(
             (str(self._bartender_mode or "").strip().lower() == "auto")
@@ -2014,7 +2036,7 @@ class App(QMainWindow, form):
                 hint_label.setText("메뉴얼모드: 주변장치 상태 확인 없이 개발자 UI에서 동일 시퀀스를 테스트합니다.")
             if status_label is not None and (not self._bartender_sequence_running) and (not lock_status):
                 status_label.setText(f"상태: {mode_text} 대기")
-                status_label.setStyleSheet("font-size: 10pt; font-weight: 800; color: #1f2937;")
+                status_label.setStyleSheet(f"font-size: {max(7.0, 10.0 * ts):.1f}pt; font-weight: 800; color: #1f2937;")
             return
 
         if start_btn is not None:
@@ -2026,7 +2048,7 @@ class App(QMainWindow, form):
             hint_label.setText("오토모드: WEB UI 보이스 버튼으로 시퀀스를 시작합니다. (메뉴얼과 동일 실행 조건)")
         if status_label is not None and (not self._bartender_sequence_running) and (not lock_status):
             status_label.setText("상태: 오토모드 대기 (WEB UI 보이스 버튼 시작)")
-            status_label.setStyleSheet("font-size: 10pt; font-weight: 800; color: #166534;")
+            status_label.setStyleSheet(f"font-size: {max(7.0, 10.0 * ts):.1f}pt; font-weight: 800; color: #166534;")
 
     def _apply_device_toggle_lock_by_mode(self):
         lock = str(getattr(self, "_bartender_mode", "") or "").strip().lower() == "auto"
@@ -4528,69 +4550,152 @@ class App(QMainWindow, form):
         x, y, w, h = rect
         panel.setGeometry(int(x), int(y), int(w), int(h))
         panel.raise_()
+        s = float(getattr(self, "_dashboard_layout_scale", 1.0) or 1.0)
+        ts = self._ui_text_scale()
+        def S(v, mn=1):
+            return max(int(mn), int(round(float(v) * s)))
 
-        margin = 12
-        title_top = 10
-        title_h = 34
-        ctrl_h = 26
-        text_h = 22
-        hint_h = 32
+        margin = S(12, 8)
+        title_top = S(10, 6)
+        title_h = S(34, 26)
+        ctrl_h = S(26, 22)
+        text_h = S(22, 18)
+        hint_h = S(34, 24)
 
         if self._bartender_title_label is not None:
+            self._bartender_title_label.setStyleSheet(
+                f"font-size: {max(10.0, 18.0 * ts):.1f}pt; font-weight: 800; color: #111827;"
+            )
             self._bartender_title_label.setGeometry(margin, title_top, max(120, w - (margin * 2)), title_h)
 
-        y0 = title_top + title_h + 8
-        mode_btn_w = max(96, int((w - (margin * 2) - 8) / 2))
-        if self._bartender_manual_mode_button is not None:
-            self._bartender_manual_mode_button.setGeometry(margin, y0, mode_btn_w, ctrl_h)
-        if self._bartender_auto_mode_button is not None:
-            self._bartender_auto_mode_button.setGeometry(margin + mode_btn_w + 8, y0, mode_btn_w, ctrl_h)
+        y0 = title_top + title_h + S(8, 6)
 
-        y0 += ctrl_h + 8
+        # 1) 세팅 섹션
         settings_box = getattr(self, "_bartender_settings_box", None)
-        settings_h = 84
+        settings_h = S(112, 92)
         if settings_box is not None:
             settings_box.setGeometry(margin, y0, max(120, w - (margin * 2)), settings_h)
-            inner_margin = 8
+            inner_margin = S(8, 6)
             inner_w = max(120, settings_box.width() - (inner_margin * 2))
-            pose_h = 22
-            if self._bartender_pose_button is not None:
-                self._bartender_pose_button.setGeometry(inner_margin, inner_margin, inner_w, pose_h)
-            row_y = inner_margin + pose_h + 8
-            if self._bartender_speed_title_label is not None:
-                self._bartender_speed_title_label.setGeometry(inner_margin, row_y, 152, 18)
-            slider_x = inner_margin + 156
-            slider_w = max(120, inner_w - 206)
-            if self._bartender_speed_slider is not None:
-                self._bartender_speed_slider.setGeometry(slider_x, row_y, slider_w, 18)
-            if self._bartender_speed_value_label is not None:
-                self._bartender_speed_value_label.setGeometry(
-                    min(settings_box.width() - 42, slider_x + slider_w + 6),
-                    row_y,
-                    36,
-                    18,
+            settings_title_h = S(18, 14)
+            if self._bartender_settings_title_label is not None:
+                self._bartender_settings_title_label.setStyleSheet(
+                    f"color: #1f2937; font-size: {max(7.0, 9.8 * ts):.1f}pt; font-weight: 800;"
                 )
-        y0 += settings_h + 8
+                self._bartender_settings_title_label.setGeometry(inner_margin, inner_margin, S(72, 50), settings_title_h)
+            pose_h = S(28, 22)
+            pose_y = inner_margin + settings_title_h + S(6, 4)
+            if self._bartender_pose_button is not None:
+                self._bartender_pose_button.setStyleSheet(
+                    "QPushButton { "
+                    f"background: #eef2ff; color: #1f2937; border: 1px solid #c7d2fe; border-radius: 4px; font-size: {max(7.0, 10.2 * ts):.1f}pt; font-weight: 700; "
+                    "}"
+                    "QPushButton:hover { background: #e0e7ff; }"
+                )
+                self._bartender_pose_button.setGeometry(inner_margin, pose_y, inner_w, pose_h)
+            row_y = pose_y + pose_h + S(8, 6)
+            if self._bartender_speed_title_label is not None:
+                self._bartender_speed_title_label.setStyleSheet(
+                    f"color: #1f3b63; font-size: {max(6.6, 8.6 * ts):.1f}pt; font-weight: 700;"
+                )
+                self._bartender_speed_title_label.setGeometry(inner_margin, row_y, S(148, 112), S(18, 14))
+            slider_x = inner_margin + S(156, 120)
+            slider_w = max(120, inner_w - S(206, 160))
+            if self._bartender_speed_slider is not None:
+                self._bartender_speed_slider.setGeometry(slider_x, row_y, slider_w, S(18, 14))
+            if self._bartender_speed_value_label is not None:
+                self._bartender_speed_value_label.setStyleSheet(
+                    f"color: #1f3b63; font-size: {max(6.8, 10.4 * ts):.1f}pt; font-weight: 700;"
+                )
+                self._bartender_speed_value_label.setGeometry(
+                    min(settings_box.width() - S(42, 32), slider_x + slider_w + S(6, 4)),
+                    row_y,
+                    S(36, 28),
+                    S(18, 14),
+                )
+        y0 += settings_h + S(8, 6)
 
-        start_h = 34
-        if self._bartender_start_button is not None:
-            self._bartender_start_button.setGeometry(margin, y0, max(120, w - (margin * 2)), start_h)
+        # 2) 구동 섹션 (모드선택/상태/시작버튼)
+        drive_box = getattr(self, "_bartender_drive_box", None)
+        drive_h = S(186, 148)
+        if drive_box is not None:
+            drive_box.setGeometry(margin, y0, max(120, w - (margin * 2)), drive_h)
+            d_margin = S(8, 6)
+            d_w = max(120, drive_box.width() - (d_margin * 2))
+            d_title_h = S(18, 14)
+            if self._bartender_drive_title_label is not None:
+                self._bartender_drive_title_label.setStyleSheet(
+                    f"color: #1f2937; font-size: {max(7.0, 9.8 * ts):.1f}pt; font-weight: 800;"
+                )
+                self._bartender_drive_title_label.setGeometry(d_margin, d_margin, S(72, 50), d_title_h)
+            mode_y = d_margin + d_title_h + S(6, 4)
+            mode_btn_w = max(96, int((d_w - S(8, 6)) / 2))
+            if self._bartender_manual_mode_button is not None:
+                self._bartender_manual_mode_button.setStyleSheet(
+                    "QPushButton { "
+                    f"background: #edf2f7; color: #1f2937; border: 1px solid #cbd5e1; border-radius: 4px; font-size: {max(7.0, 10.2 * ts):.1f}pt; font-weight: 700; "
+                    "}"
+                    "QPushButton:checked { background: #1f6feb; color: #ffffff; border-color: #1f6feb; }"
+                )
+                self._bartender_manual_mode_button.setGeometry(d_margin, mode_y, mode_btn_w, ctrl_h)
+            if self._bartender_auto_mode_button is not None:
+                self._bartender_auto_mode_button.setStyleSheet(
+                    "QPushButton { "
+                    f"background: #edf2f7; color: #1f2937; border: 1px solid #cbd5e1; border-radius: 4px; font-size: {max(7.0, 10.2 * ts):.1f}pt; font-weight: 700; "
+                    "}"
+                    "QPushButton:checked { background: #1f6feb; color: #ffffff; border-color: #1f6feb; }"
+                )
+                self._bartender_auto_mode_button.setGeometry(d_margin + mode_btn_w + S(8, 6), mode_y, mode_btn_w, ctrl_h)
+            status_y = mode_y + ctrl_h + S(8, 6)
+            if self._bartender_status_label is not None:
+                self._bartender_status_label.setStyleSheet(
+                    f"font-size: {max(7.5, 11.8 * ts):.1f}pt; font-weight: 800; color: #1f2937;"
+                )
+                self._bartender_status_label.setGeometry(d_margin, status_y, d_w, text_h)
+            hint_y = status_y + text_h
+            if self._bartender_mode_hint_label is not None:
+                self._bartender_mode_hint_label.setStyleSheet(
+                    f"font-size: {max(6.8, 8.8 * ts):.1f}pt; font-weight: 600; color: #475569;"
+                )
+                self._bartender_mode_hint_label.setGeometry(d_margin, hint_y, d_w, hint_h)
+            start_h = S(44, 34)
+            start_y = hint_y + hint_h + S(8, 6)
+            if self._bartender_start_button is not None:
+                self._bartender_start_button.setStyleSheet(
+                    "QPushButton { "
+                    f"background: #166534; color: #ffffff; border: 1px solid #166534; border-radius: 4px; font-size: {max(8.0, 11.8 * ts):.1f}pt; font-weight: 800; "
+                    "}"
+                    "QPushButton:hover { background: #14532d; }"
+                    "QPushButton:disabled { background: #94a3b8; border-color: #94a3b8; color: #f8fafc; }"
+                )
+                self._bartender_start_button.setGeometry(d_margin, start_y, d_w, start_h)
+        y0 += drive_h + S(8, 6)
 
-        y0 += start_h + 8
-        if self._bartender_status_label is not None:
-            self._bartender_status_label.setGeometry(margin, y0, max(120, w - (margin * 2)), text_h)
-        y0 += text_h
-        if self._bartender_mode_hint_label is not None:
-            self._bartender_mode_hint_label.setGeometry(margin, y0, max(120, w - (margin * 2)), hint_h)
-        y0 += hint_h + 6
+        # 3) 진행상태 섹션
+        action_btn_h = S(30, 24)
+        action_btn_gap = S(6, 4)
+        progress_box = getattr(self, "_bartender_progress_box", None)
+        remain_h = max(120, h - y0 - margin - action_btn_gap - action_btn_h)
+        progress_h = remain_h
+        if progress_box is not None:
+            progress_box.setGeometry(margin, y0, max(120, w - (margin * 2)), progress_h)
+            p_margin = S(8, 6)
+            p_title_h = S(18, 14)
+            if self._bartender_progress_title_label is not None:
+                self._bartender_progress_title_label.setStyleSheet(
+                    f"color: #1f2937; font-size: {max(7.0, 9.8 * ts):.1f}pt; font-weight: 800;"
+                )
+                self._bartender_progress_title_label.setGeometry(p_margin, p_margin, S(88, 64), p_title_h)
 
         seq_area = getattr(self, "_bartender_sequence_area", None)
         if seq_area is None:
             return
-        action_btn_h = 30
-        action_btn_gap = 6
-        seq_h = max(120, h - y0 - margin - action_btn_gap - action_btn_h)
-        seq_area.setGeometry(margin, y0, max(120, w - (margin * 2)), seq_h)
+        seq_top = S(8, 6) + S(18, 14) + S(6, 4)
+        seq_h = max(S(100, 80), progress_h - seq_top - S(8, 6))
+        if progress_box is not None:
+            seq_area.setGeometry(S(8, 6), seq_top, max(80, progress_box.width() - S(16, 12)), seq_h)
+        else:
+            seq_area.setGeometry(margin, y0, max(120, w - (margin * 2)), seq_h)
 
         inner_margin = 8
         step_count = max(1, len(BARTENDER_SEQUENCE_STEPS))
@@ -4609,7 +4714,14 @@ class App(QMainWindow, form):
             py += step_h + step_gap
 
         if self._bartender_robot_action_test_button is not None:
-            btn_y = seq_area.y() + seq_h + action_btn_gap
+            self._bartender_robot_action_test_button.setStyleSheet(
+                "QPushButton { "
+                f"background: #0f766e; color: #ffffff; border: 1px solid #0f766e; border-radius: 4px; font-size: {max(7.0, 10.2 * ts):.1f}pt; font-weight: 800; "
+                "}"
+                "QPushButton:hover { background: #115e59; }"
+                "QPushButton:disabled { background: #94a3b8; border-color: #94a3b8; color: #f8fafc; }"
+            )
+            btn_y = y0 + progress_h + action_btn_gap
             self._bartender_robot_action_test_button.setGeometry(
                 margin, btn_y, max(120, w - (margin * 2)), action_btn_h
             )
@@ -4617,6 +4729,7 @@ class App(QMainWindow, form):
     def _refresh_bartender_sequence_styles(self):
         if not self._bartender_sequence_widgets:
             return
+        seq_pt = max(7.0, 11.6 * self._ui_text_scale())
 
         phase = time.monotonic() % 1.0
         fade = 0.5 * (1.0 + np.sin((2.0 * np.pi * phase) - (np.pi / 2.0)))
@@ -4629,22 +4742,22 @@ class App(QMainWindow, form):
             state = str(self._bartender_sequence_state.get(key, "pending") or "pending").strip().lower()
             if state == "done":
                 lbl.setStyleSheet(
-                    "QLabel { background: #dcfce7; border: 1px solid #22c55e; border-radius: 4px; color: #166534; font-size: 8.6pt; font-weight: 900; padding-left: 7px; }"
+                    f"QLabel {{ background: #dcfce7; border: 1px solid #22c55e; border-radius: 4px; color: #166534; font-size: {seq_pt:.1f}pt; font-weight: 900; padding-left: 7px; }}"
                 )
                 continue
             if state == "error":
                 lbl.setStyleSheet(
-                    "QLabel { background: #fee2e2; border: 1px solid #ef4444; border-radius: 4px; color: #991b1b; font-size: 8.6pt; font-weight: 900; padding-left: 7px; }"
+                    f"QLabel {{ background: #fee2e2; border: 1px solid #ef4444; border-radius: 4px; color: #991b1b; font-size: {seq_pt:.1f}pt; font-weight: 900; padding-left: 7px; }}"
                 )
                 continue
             if state == "active":
                 alpha = int(max(92, min(255, round(104 + (fade * 151)))))
                 lbl.setStyleSheet(
-                    f"QLabel {{ background: rgba(22, 163, 74, {alpha}); border: 1px solid #16a34a; border-radius: 4px; color: #ffffff; font-size: 8.6pt; font-weight: 900; padding-left: 7px; }}"
+                    f"QLabel {{ background: rgba(22, 163, 74, {alpha}); border: 1px solid #16a34a; border-radius: 4px; color: #ffffff; font-size: {seq_pt:.1f}pt; font-weight: 900; padding-left: 7px; }}"
                 )
                 continue
             lbl.setStyleSheet(
-                "QLabel { background: #ffffff; border: 1px solid #dbe2ea; border-radius: 4px; color: #334155; font-size: 8.6pt; font-weight: 700; padding-left: 7px; }"
+                f"QLabel {{ background: #ffffff; border: 1px solid #dbe2ea; border-radius: 4px; color: #334155; font-size: {seq_pt:.1f}pt; font-weight: 700; padding-left: 7px; }}"
             )
 
     def _robot_action_backend_call(self, method_name: str, *args, **kwargs):
@@ -4768,80 +4881,134 @@ class App(QMainWindow, form):
         panel = getattr(self, "_voice_order_panel", None)
         if panel is None:
             return
+        s = float(getattr(self, "_dashboard_layout_scale", 1.0) or 1.0)
+        ts = self._ui_text_scale()
+        def S(v, mn=1):
+            return max(int(mn), int(round(float(v) * s)))
         w = int(panel.width())
         h = int(panel.height())
-        margin = 10
+        margin = S(10, 6)
         content_w = max(80, w - (margin * 2))
 
-        y = 10
+        # Voice-order section: apply proportional font scaling.
+        base_label_pt = max(7.0, 10.0 * ts)
+        base_state_pt = max(6.5, 9.2 * ts)
+        if self._voice_order_input_label is not None:
+            self._voice_order_input_label.setStyleSheet(f"font-size: {base_label_pt:.1f}pt; font-weight: 600; color: #1f2937;")
+        if self._voice_order_llm_label is not None:
+            self._voice_order_llm_label.setStyleSheet(f"font-size: {base_label_pt:.1f}pt; font-weight: 600; color: #1f2937;")
+        if self._voice_order_result_label is not None:
+            self._voice_order_result_label.setStyleSheet(f"font-size: {base_label_pt:.1f}pt; font-weight: 600; color: #1f2937;")
+        if self._voice_order_mic_state_label is not None:
+            self._voice_order_mic_state_label.setStyleSheet(f"font-size: {base_state_pt:.1f}pt; font-weight: 700; color: #1f2937;")
+        if self._voice_order_mic_button is not None:
+            self._voice_order_mic_button.setStyleSheet(
+                "QPushButton { background: #1f6feb; color: #ffffff; border: 1px solid #1f6feb; border-radius: 4px; "
+                f"font-weight: 700; font-size: {max(7.0, 9.5 * ts):.1f}pt; }}"
+                "QPushButton:hover { background: #1660ce; }"
+                "QPushButton:disabled { background: #94a3b8; border-color: #94a3b8; color: #f8fafc; }"
+            )
+        if self._voice_order_input_edit is not None:
+            self._voice_order_input_edit.setFont(QFont(UI_FONT_FAMILY, int(round(max(7.0, UI_FONT_SIZE * ts)))))
+        if self._voice_order_llm_edit is not None:
+            self._voice_order_llm_edit.setFont(QFont(UI_FONT_FAMILY, int(round(max(7.0, UI_FONT_SIZE * ts)))))
+        if self._voice_order_recipe_view is not None:
+            recipe_pt = max(9.3, UI_FONT_SIZE * ts * 1.185)
+            self._voice_order_recipe_view.setFont(QFont(UI_FONT_FAMILY, int(round(recipe_pt))))
+            self._voice_order_recipe_view.setStyleSheet(f"font-size: {recipe_pt:.1f}pt;")
+
+        y = S(10, 6)
         if self._voice_order_connection_toggle is not None:
-            self._voice_order_connection_toggle.setGeometry(margin, y, 71, 20)
-        mic_test_w = 168
-        mic_test_h = 34
+            self._voice_order_connection_toggle.setGeometry(margin, y, S(71, 56), S(20, 16))
+        mic_test_w = max(S(120, 96), int(w * 0.24))
+        mic_test_h = S(34, 26)
         mic_test_x = max(margin, w - margin - mic_test_w)
         if self._voice_order_cycle_label is not None:
-            self._voice_order_cycle_label.setGeometry(max(margin, w - margin - 168), y, 168, 16)
-        y += 26
+            self._voice_order_cycle_label.setGeometry(max(margin, w - margin - S(168, 130)), y, S(168, 130), S(16, 12))
+            cycle_pt = max(6.0, UI_TERMINAL_FONT_SIZE * ts)
+            self._voice_order_cycle_label.setStyleSheet(
+                f"color: #555; font-size: {cycle_pt:.1f}pt; font-weight: 500;"
+            )
+        y += S(26, 20)
         if self._voice_order_connection_dot is not None:
-            self._voice_order_connection_dot.setGeometry(0, y, 41, 41)
-        right_reserved = (mic_test_w + 8) if self._voice_order_mic_test_panel is not None else 0
+            self._voice_order_connection_dot.setGeometry(0, y, S(41, 30), S(41, 30))
+        right_reserved = (mic_test_w + S(6, 4)) if self._voice_order_mic_test_panel is not None else 0
         if self._voice_order_connection_label is not None:
-            self._voice_order_connection_label.setGeometry(50, max(0, y - 10), max(120, content_w - 170 - right_reserved), 61)
+            self._voice_order_connection_label.setGeometry(
+                S(44, 30), max(0, y - S(10, 8)), max(128, content_w - S(132, 96) - right_reserved), S(61, 48)
+            )
         if self._voice_order_mic_test_panel is not None:
-            self._voice_order_mic_test_panel.setGeometry(mic_test_x, y + 18, mic_test_w, mic_test_h)
+            self._voice_order_mic_test_panel.setGeometry(mic_test_x, y + S(18, 12), mic_test_w, mic_test_h)
             if self._voice_order_mic_test_title_label is not None:
-                self._voice_order_mic_test_title_label.setGeometry(6, 2, 98, 12)
+                mic_test_title_pt = max(5.2, 7.2 * ts)
+                self._voice_order_mic_test_title_label.setStyleSheet(
+                    f"font-size: {mic_test_title_pt:.1f}pt; font-weight: 700; color: #334155;"
+                )
+                self._voice_order_mic_test_title_label.setGeometry(S(6, 4), S(2, 1), S(98, 76), S(12, 9))
             if self._voice_order_mic_test_value_label is not None:
-                self._voice_order_mic_test_value_label.setGeometry(mic_test_w - 52, 2, 46, 12)
+                mic_test_value_pt = max(5.0, 6.8 * ts)
+                self._voice_order_mic_test_value_label.setStyleSheet(
+                    f"font-size: {mic_test_value_pt:.1f}pt; font-weight: 700; color: #475569;"
+                )
+                self._voice_order_mic_test_value_label.setGeometry(mic_test_w - S(52, 40), S(2, 1), S(46, 36), S(12, 9))
             if self._voice_order_mic_test_level_bar is not None:
-                self._voice_order_mic_test_level_bar.setGeometry(6, 17, mic_test_w - 12, 10)
-        y += 54
+                self._voice_order_mic_test_level_bar.setGeometry(S(6, 4), S(17, 12), mic_test_w - S(12, 8), S(10, 8))
+        y += S(54, 40)
         if self._voice_order_input_label is not None:
-            self._voice_order_input_label.setGeometry(margin, y, content_w, 20)
-        y += 22
+            self._voice_order_input_label.setGeometry(margin, y, content_w, S(20, 16))
+        y += S(22, 17)
 
         input_h = max(62, int(h * 0.13))
         if self._voice_order_input_edit is not None:
             self._voice_order_input_edit.setGeometry(margin, y, content_w, input_h)
-        y += input_h + 8
+        y += input_h + S(8, 6)
 
         if self._voice_order_llm_label is not None:
-            self._voice_order_llm_label.setGeometry(margin, y, content_w, 20)
-        y += 22
+            self._voice_order_llm_label.setGeometry(margin, y, content_w, S(20, 16))
+        y += S(22, 17)
 
         llm_h = max(54, int(h * 0.10))
         if self._voice_order_llm_edit is not None:
             self._voice_order_llm_edit.setGeometry(margin, y, content_w, llm_h)
-        y += llm_h + 8
+        y += llm_h + S(8, 6)
 
-        mic_h = 28
+        mic_h = S(28, 22)
         if self._voice_order_mic_button is not None:
             self._voice_order_mic_button.setGeometry(margin, y, content_w, mic_h)
-        y += mic_h + 6
+        y += mic_h + S(6, 4)
 
         if self._voice_order_mic_state_label is not None:
-            self._voice_order_mic_state_label.setGeometry(margin, y, content_w, 18)
-        y += 22
+            self._voice_order_mic_state_label.setGeometry(margin, y, content_w, S(18, 14))
+        y += S(22, 17)
         if self._voice_order_mic_level_bar is not None:
-            self._voice_order_mic_level_bar.setGeometry(margin, y, content_w, 8)
-        y += 14
+            self._voice_order_mic_level_bar.setGeometry(margin, y, content_w, S(8, 6))
+        y += S(14, 10)
 
         if self._voice_order_result_label is not None:
-            self._voice_order_result_label.setGeometry(margin, y, content_w, 20)
-        y += 22
+            self._voice_order_result_label.setGeometry(margin, y, content_w, S(20, 16))
+        y += S(22, 17)
 
-        footer_reserved = 24 + 6 + 24 + 8
-        recipe_h = int(max(72, h - y - footer_reserved))
+        webui_h = S(24, 18)
+        badge_h = S(24, 18)
+        gap_h = S(6, 4)
+        bottom_margin = S(12, 8)
+        footer_reserved = bottom_margin
+        if self._voice_order_webui_button is not None:
+            footer_reserved += webui_h + gap_h
+        if self._voice_order_html_badge is not None:
+            footer_reserved += badge_h + gap_h
+        recipe_h = int(max(S(96, 72), h - y - footer_reserved))
         if self._voice_order_recipe_view is not None:
             self._voice_order_recipe_view.setGeometry(margin, y, content_w, recipe_h)
-        y += recipe_h + 6
+        y += recipe_h + gap_h
 
         if self._voice_order_webui_button is not None:
-            self._voice_order_webui_button.setGeometry(margin, y, content_w, 24)
-        y += 30
+            self._voice_order_webui_button.setGeometry(margin, y, content_w, webui_h)
+            y += webui_h + gap_h
 
         if self._voice_order_html_badge is not None:
-            self._voice_order_html_badge.setGeometry(margin, y, content_w, 24)
+            self._voice_order_html_badge.setGeometry(margin, y, content_w, badge_h)
+            y += badge_h + gap_h
 
     def _set_voice_order_connection_state(self, connected: bool):
         on = bool(connected)
@@ -5585,9 +5752,12 @@ class App(QMainWindow, form):
             r, g, b = _hex_to_rgb(bright)
             alpha = 255
 
+        txt_scale = self._ui_text_scale()
+        title_pt = max(10.0, 14.0 * txt_scale)
+        dot_pt = max(14.0, 20.0 * txt_scale)
         label.setText(f"음성주문: {state_text}")
-        label.setStyleSheet("font-size: 14pt; font-weight: 700; color: #202020;")
-        dot.setStyleSheet(f"font-size: 20pt; color: rgba({r}, {g}, {b}, {alpha});")
+        label.setStyleSheet(f"font-size: {title_pt:.1f}pt; font-weight: 700; color: #202020;")
+        dot.setStyleSheet(f"font-size: {dot_pt:.1f}pt; color: rgba({r}, {g}, {b}, {alpha});")
 
     def _append_voice_order_log(self, message: str, level: str = "info"):
         text = str(message or "").strip()
@@ -6294,6 +6464,75 @@ class App(QMainWindow, form):
         self._layout_main_frames()
         self._status_row_ready = True
 
+    def _ui_text_scale(self) -> float:
+        s = float(getattr(self, "_dashboard_layout_scale", 1.0) or 1.0)
+        # Text should shrink less aggressively than geometry.
+        return max(0.62, min(1.0, s))
+
+    def _apply_adaptive_global_font(self):
+        scale = self._ui_text_scale()
+        prev = float(getattr(self, "_ui_font_scale_applied", 1.0) or 1.0)
+        if abs(prev - scale) < 0.01:
+            return
+        try:
+            app = QApplication.instance()
+            if app is None:
+                return
+            base = float(UI_FONT_SIZE)
+            new_pt = max(7.0, min(base, base * scale))
+            f = QFont(UI_FONT_FAMILY, int(round(new_pt)))
+            app.setFont(f)
+            self.setFont(QFont(f))
+            self._ui_font_scale_applied = scale
+        except Exception:
+            pass
+
+    def _apply_scaled_toggle_style(self, toggle, *, base_font_pt=9.0, base_w=34, base_h=18, pad_left=2):
+        if toggle is None:
+            return
+        ts = self._ui_text_scale()
+        font_pt = max(6.0, float(base_font_pt) * ts)
+        ind_w = max(16, int(round(float(base_w) * ts)))
+        ind_h = max(10, int(round(float(base_h) * ts)))
+        radius = max(5, int(round(ind_h / 2.0)))
+        obj = str(getattr(toggle, "objectName", lambda: "")() or "").strip()
+        sel = f"QCheckBox#{obj}" if obj else "QCheckBox"
+        try:
+            toggle.setStyleSheet(
+                f"{sel} {{ font-size: {font_pt:.1f}pt; font-weight: 700; padding-left: {int(pad_left)}px; }}"
+                f"{sel}::indicator {{ width: {ind_w}px; height: {ind_h}px; border-radius: {radius}px; "
+                "border: 1px solid #95a5b4; background: #d6dde5; }}"
+                f"{sel}::indicator:checked {{ background: #2e7d32; border: 1px solid #2e7d32; }}"
+            )
+        except Exception:
+            pass
+
+    def _apply_scaled_checkbox_style(self, toggle, *, base_font_pt=7.0, base_ind=12, pad_left=1):
+        if toggle is None:
+            return
+        ts = self._ui_text_scale()
+        font_pt = max(6.0, float(base_font_pt) * ts)
+        ind = max(10, int(round(float(base_ind) * ts)))
+        try:
+            toggle.setStyleSheet(
+                f"QCheckBox {{ font-size: {font_pt:.1f}pt; font-weight: 700; padding-left: {int(pad_left)}px; }}"
+                f"QCheckBox::indicator {{ width: {ind}px; height: {ind}px; }}"
+            )
+        except Exception:
+            pass
+
+    def _apply_scaled_toggle_styles(self):
+        # Top status ON/OFF toggles
+        for _k, tg in getattr(self, "_top_status_toggles", {}).items():
+            self._apply_scaled_toggle_style(tg, base_font_pt=9.0, base_w=34, base_h=18, pad_left=2)
+        # Voice ON/OFF
+        self._apply_scaled_toggle_style(getattr(self, "_voice_order_connection_toggle", None), base_font_pt=9.0, base_w=34, base_h=18, pad_left=2)
+        # Robot vision-click toggle
+        self._apply_scaled_toggle_style(getattr(self, "_vision_dialog_toggle_switch", None), base_font_pt=9.2, base_w=34, base_h=18, pad_left=3)
+        # Vision panel TF toggles
+        self._apply_scaled_checkbox_style(getattr(self, "_calibration_mode_switch", None), base_font_pt=7.0, base_ind=12, pad_left=1)
+        self._apply_scaled_checkbox_style(getattr(self, "_calibration_mode_switch_2", None), base_font_pt=7.0, base_ind=12, pad_left=1)
+
     def _layout_main_frames(self):
         if UI_USE_DESIGN_GEOMETRY:
             return
@@ -6305,21 +6544,56 @@ class App(QMainWindow, form):
         if frame_l is None or frame_r is None or frame_log is None:
             return
 
-        margin = DASHBOARD_MARGIN
-        col_gap = DASHBOARD_COL_GAP
-        row_gap = DASHBOARD_ROW_GAP
+        screen = self.screen() or QApplication.primaryScreen()
+        if screen is not None:
+            try:
+                geo = screen.availableGeometry()
+                avail_w = max(1, int(geo.width()))
+                avail_h = max(1, int(geo.height()))
+            except Exception:
+                avail_w = max(1, int(self.width()))
+                avail_h = max(1, int(self.height()))
+        else:
+            avail_w = max(1, int(self.width()))
+            avail_h = max(1, int(self.height()))
+        sx = float(avail_w) / float(max(1, UI_LAYOUT_BASE_WIDTH))
+        sy = float(avail_h) / float(max(1, UI_LAYOUT_BASE_HEIGHT))
+        win_sx = float(max(1, int(self.width()))) / float(max(1, UI_LAYOUT_BASE_WIDTH))
+        win_sy = float(max(1, int(self.height()))) / float(max(1, UI_LAYOUT_BASE_HEIGHT))
+        win_scale = min(win_sx, win_sy)
+        try:
+            dpi = float(screen.logicalDotsPerInch()) if screen is not None else 96.0
+        except Exception:
+            dpi = 96.0
+        dpi_scale = max(1.0, float(dpi) / 96.0)
+        layout_scale = max(0.55, min(1.0, min(min(sx, sy) / dpi_scale, win_scale)))
+        self._dashboard_layout_scale = layout_scale
+        self._apply_adaptive_global_font()
+        self._apply_scaled_toggle_styles()
+
+        margin = max(8, int(round(DASHBOARD_MARGIN * layout_scale)))
+        col_gap = max(6, int(round(DASHBOARD_COL_GAP * layout_scale)))
+        row_gap = max(6, int(round(DASHBOARD_ROW_GAP * layout_scale)))
 
         has_top_status_row = self._top_status_panel is not None
-        target_y = (TOP_STATUS_BAR_HEIGHT + TOP_STATUS_GAP) if has_top_status_row else margin
-        base_col_w = [int(DASHBOARD_COL_WIDTHS[0]), int(DASHBOARD_COL_WIDTHS[1]), int(DASHBOARD_COL_WIDTHS[2])]
+        target_y = (
+            int(round((TOP_STATUS_BAR_HEIGHT + TOP_STATUS_GAP) * layout_scale))
+            if has_top_status_row
+            else margin
+        )
+        base_col_w = [
+            int(round(DASHBOARD_COL_WIDTHS[0] * layout_scale)),
+            int(round(DASHBOARD_COL_WIDTHS[1] * layout_scale)),
+            int(round(DASHBOARD_COL_WIDTHS[2] * layout_scale)),
+        ]
         section_w = int(min(base_col_w[1], base_col_w[2]))
-        left_w = int(min(base_col_w[0], max(400, int(section_w * 0.92))))
+        left_w = int(min(base_col_w[0], max(int(320 * layout_scale), int(section_w * 0.92))))
         col_w = [left_w, section_w, section_w]
-        row1_h = int(DASHBOARD_TOP_PANEL_HEIGHT)
-        row2_h = int(DASHBOARD_BOTTOM_PANEL_HEIGHT)
+        row1_h = int(round(DASHBOARD_TOP_PANEL_HEIGHT * layout_scale))
+        row2_h = int(round(DASHBOARD_BOTTOM_PANEL_HEIGHT * layout_scale))
         combined_top_h = row1_h + row_gap + row2_h
         log_h = max(
-            int(DASHBOARD_LOG_MIN_HEIGHT),
+            int(round(DASHBOARD_LOG_MIN_HEIGHT * layout_scale)),
             int(round(float(combined_top_h) * float(DASHBOARD_LOG_HEIGHT_RATIO))),
         )
         content_h = row1_h + row_gap + row2_h + row_gap + log_h
@@ -6335,16 +6609,22 @@ class App(QMainWindow, form):
         required_window_h = required_central_h + extra_h
 
         if not bool(getattr(self, "_dashboard_resize_guard", False)):
-            self.setMinimumSize(required_window_w, required_window_h)
+            min_w = min(required_window_w, max(600, int(avail_w * 0.7)))
+            min_h = min(required_window_h, max(500, int(avail_h * 0.7)))
+            min_w = min(min_w, avail_w)
+            min_h = min(min_h, avail_h)
+            self.setMinimumSize(min_w, min_h)
+            fit_w = min(required_window_w, avail_w)
+            fit_h = min(required_window_h, avail_h)
             need_fit = (
                 (not self.isMaximized())
                 and (not self.isFullScreen())
-                and (self.width() != required_window_w or self.height() != required_window_h)
+                and (self.width() != fit_w or self.height() != fit_h)
             )
             if need_fit:
                 self._dashboard_resize_guard = True
                 try:
-                    self.resize(required_window_w, required_window_h)
+                    self.resize(fit_w, fit_h)
                 finally:
                     self._dashboard_resize_guard = False
 
@@ -6362,7 +6642,7 @@ class App(QMainWindow, form):
         frame_l.setGeometry(x_col2, y_row2, col_w[1], row2_h)
         if frame_m is not None:
             frame_m.setGeometry(x_col3, y_row2, col_w[2], row2_h)
-        frame_log.setGeometry(x_col1, y_row3, total_grid_w, log_h)
+        frame_log.setGeometry(x_col1, max(0, y_row3 - int(LOG_AREA_SHIFT_Y)), total_grid_w, log_h)
 
         self._layout_bartender_overview_panel()
         self._layout_voice_order_panel()
@@ -6371,21 +6651,34 @@ class App(QMainWindow, form):
         if hasattr(self, "_log_clear_button") and self._log_clear_button is not None:
             btn_w = 96
             btn_h = 24
-            self._log_clear_button.setGeometry(max(10, frame_log.width() - btn_w - 12), 8, btn_w, btn_h)
+            clear_x = max(10, frame_log.width() - btn_w - 12)
+            self._log_clear_button.setGeometry(clear_x, 8, btn_w, btn_h)
+            follow_toggle = getattr(self, "_log_follow_toggle", None)
+            if follow_toggle is not None:
+                follow_w = 112
+                follow_h = 24
+                follow_gap = 8
+                follow_x = max(10, clear_x - follow_gap - follow_w)
+                follow_toggle.setGeometry(follow_x, 8, follow_w, follow_h)
         if term is not None:
             term.setGeometry(10, 40, max(120, frame_log.width() - 20), max(120, frame_log.height() - 50))
 
     def _layout_vision_widgets(self):
+        s = float(getattr(self, "_dashboard_layout_scale", 1.0) or 1.0)
+        def S(v, mn=1):
+            return max(int(mn), int(round(float(v) * s)))
         def _layout_single(frame_obj, view_obj, calib_box):
             if frame_obj is None or view_obj is None:
                 return
-            top_y = 93
-            side = 10
-            bottom = 14
-            gap = 8
-            min_view_h = 120
-            min_calib_h = 96
-            default_calib_h = 129
+            top_y = S(93, 78)
+            if s < 0.95:
+                top_y += S(16, 12)
+            side = S(10, 7)
+            bottom = S(14, 10)
+            gap = S(8, 6)
+            min_view_h = S(120, 92)
+            min_calib_h = S(96, 76)
+            default_calib_h = S(129, 98)
             panel_w = max(220, frame_obj.width() - (side * 2))
             panel_h = int(frame_obj.height())
             view_h = max(min_view_h, panel_h - top_y - bottom)
@@ -6416,6 +6709,7 @@ class App(QMainWindow, form):
         frame_log = getattr(self, "frame_3", None)
         if frame_log is None:
             self._log_clear_button = None
+            self._log_follow_toggle = None
             return
         self._log_clear_button = getattr(self, "log_clear_button", None)
         if self._log_clear_button is None:
@@ -6425,6 +6719,46 @@ class App(QMainWindow, form):
                     break
         if self._log_clear_button is not None:
             self._log_clear_button.clicked.connect(self._clear_log_terminal)
+        follow_toggle = getattr(self, "log_follow_toggle", None)
+        if not isinstance(follow_toggle, QCheckBox):
+            follow_toggle = QCheckBox(frame_log)
+            follow_toggle.setObjectName("log_follow_toggle")
+        self._log_follow_toggle = follow_toggle
+        if self._log_follow_toggle is not None:
+            self._log_follow_toggle.blockSignals(True)
+            self._log_follow_toggle.setChecked(bool(self._log_follow_enabled))
+            self._log_follow_toggle.setText(
+                f"자동추적 {'ON' if bool(self._log_follow_enabled) else 'OFF'}"
+            )
+            self._log_follow_toggle.setStyleSheet(
+                "QCheckBox { font-size: 8.6pt; font-weight: 700; color: #334155; padding-left: 2px; }"
+                "QCheckBox::indicator { width: 28px; height: 16px; border-radius: 8px; border: 1px solid #95a5b4; background: #d6dde5; }"
+                "QCheckBox::indicator:checked { background: #2e7d32; border: 1px solid #2e7d32; }"
+            )
+            self._log_follow_toggle.blockSignals(False)
+            try:
+                self._log_follow_toggle.toggled.disconnect()
+            except Exception:
+                pass
+            self._log_follow_toggle.toggled.connect(self._on_log_follow_toggled)
+            if self._log_clear_button is not None:
+                cg = self._log_clear_button.geometry()
+                follow_w = 112
+                follow_h = 24
+                follow_gap = 8
+                self._log_follow_toggle.setGeometry(
+                    max(10, int(cg.x()) - follow_gap - follow_w),
+                    int(cg.y()),
+                    follow_w,
+                    follow_h,
+                )
+            self._log_follow_toggle.show()
+
+    def _on_log_follow_toggled(self, checked: bool):
+        self._log_follow_enabled = bool(checked)
+        toggle = getattr(self, "_log_follow_toggle", None)
+        if toggle is not None:
+            toggle.setText(f"자동추적 {'ON' if self._log_follow_enabled else 'OFF'}")
 
     def _clear_log_terminal(self):
         with self._log_buffer_lock:
@@ -6488,12 +6822,13 @@ class App(QMainWindow, form):
                     term.setPlainText(existing + chunk)
             except Exception:
                 return
-        try:
-            sb = term.verticalScrollBar()
-            if sb is not None:
-                sb.setValue(sb.maximum())
-        except Exception:
-            pass
+        if bool(getattr(self, "_log_follow_enabled", True)):
+            try:
+                sb = term.verticalScrollBar()
+                if sb is not None:
+                    sb.setValue(sb.maximum())
+            except Exception:
+                pass
 
     def _fmt_ui_float(self, value, digits=2):
         try:
@@ -6554,38 +6889,6 @@ class App(QMainWindow, form):
         self._ui_tick_error_last_at[key] = now
         self.append_log(f"[UI] {key} 처리 중 예외: {err}\n")
 
-    def _log_ui_tick_slow(self, tick_name: str, elapsed_ms: float):
-        key = str(tick_name or "ui_tick")
-        if key == "log_flush":
-            return
-        now = time.monotonic()
-        last_at = float(self._ui_tick_slow_last_at.get(key, 0.0))
-        if (now - last_at) < float(UI_TICK_WARN_COOLDOWN_SEC):
-            return
-        self._ui_tick_slow_last_at[key] = now
-        self.append_log(
-            f"[UI-PERF] slow tick: {key} {float(elapsed_ms):.1f}ms "
-            f"(warn>={float(UI_TICK_WARN_MS):.1f}ms)\n"
-        )
-        self._append_ui_perf_log_file(
-            f"slow tick: {key} {float(elapsed_ms):.1f}ms (warn>={float(UI_TICK_WARN_MS):.1f}ms)"
-        )
-
-    def _append_ui_perf_log_file(self, message: str):
-        path = str(getattr(self, "_ui_perf_log_path", "") or "").strip()
-        if not path:
-            return
-        text = str(message or "").strip()
-        if not text:
-            return
-        line = f"[{time.strftime('%H:%M:%S')}] {text}\n"
-        try:
-            with self._ui_perf_log_lock:
-                with open(path, "a", encoding="utf-8") as fp:
-                    fp.write(line)
-        except Exception:
-            return
-
     def _safe_ui_tick(self, tick_name: str, fn, *args, **kwargs):
         if getattr(self, "_closing", False):
             return
@@ -6598,10 +6901,7 @@ class App(QMainWindow, form):
             self._log_ui_tick_exception(str(tick_name), e)
         finally:
             elapsed_ms = (time.monotonic() - started_at) * 1000.0
-            if UI_TICK_TRACE_ENABLED and float(elapsed_ms) >= float(UI_TICK_TRACE_MIN_MS):
-                self._append_ui_perf_log_file(f"tick_trace: {str(tick_name)} {float(elapsed_ms):.2f}ms")
-            if float(elapsed_ms) >= float(UI_TICK_WARN_MS):
-                self._log_ui_tick_slow(str(tick_name), float(elapsed_ms))
+            return
 
     def _setup_top_status_row(self):
         self._top_status_panel = getattr(self, "top_status_panel", None)
@@ -7554,8 +7854,11 @@ class App(QMainWindow, form):
             bg = bg_bright
             alpha = 255
         r, g, b = _hex_to_rgb(color)
-        dot.setStyleSheet(f"color: rgba({r}, {g}, {b}, {alpha}); font-size: 20pt;")
-        text.setStyleSheet("color: #202020; font-weight: 700; font-size: 14pt;")
+        txt_scale = self._ui_text_scale()
+        title_pt = max(10.0, 14.0 * txt_scale)
+        dot_pt = max(14.0, 20.0 * txt_scale)
+        dot.setStyleSheet(f"color: rgba({r}, {g}, {b}, {alpha}); font-size: {dot_pt:.1f}pt;")
+        text.setStyleSheet(f"color: #202020; font-weight: 700; font-size: {title_pt:.1f}pt;")
         if box is not None:
             box.setStyleSheet(f"background: {bg}; border: 1px solid #cfd8dc; border-radius: 3px;")
         text.setText(f"{title}: {state_text}")
@@ -8690,36 +8993,113 @@ class App(QMainWindow, form):
         self.calibration_ui_refresh_requested.emit()
 
     def _reposition_cycle_labels(self):
-        if hasattr(self, "_vision_cycle_label") and self._vision_cycle_label is not None:
-            parent = self._vision_cycle_label.parentWidget()
+        s = float(getattr(self, "_dashboard_layout_scale", 1.0) or 1.0)
+        def S(v, mn=1):
+            return max(int(mn), int(round(float(v) * s)))
+        cycle_pt = max(6.0, UI_TERMINAL_FONT_SIZE * self._ui_text_scale())
+        cycle_style = f"color: #555; font-size: {cycle_pt:.1f}pt;"
+        def _place_vision_header(
+            cycle_label,
+            serial_label,
+            serial_button,
+            rot_left,
+            rot_zero,
+            rot_right,
+            rot_label,
+            view_widget,
+            state_label,
+        ):
+            if cycle_label is None:
+                return
+            parent = cycle_label.parentWidget()
             w = parent.width() if parent is not None else 511
-            right_x = max(220, w - 180)
-            self._vision_cycle_label.setGeometry(right_x, 8, 168, 14)
-            if self._vision_serial_label is not None:
-                self._vision_serial_label.setGeometry(right_x - 52, 24, 220, 14)
-            if self._vision_rotate_left_button is not None:
-                self._vision_rotate_left_button.raise_()
-            if self._vision_rotate_zero_button is not None:
-                self._vision_rotate_zero_button.raise_()
-            if self._vision_rotate_right_button is not None:
-                self._vision_rotate_right_button.raise_()
-        if hasattr(self, "_vision_cycle_label_2") and self._vision_cycle_label_2 is not None:
-            parent = self._vision_cycle_label_2.parentWidget()
-            w = parent.width() if parent is not None else 511
-            right_x2 = max(220, w - 180)
-            self._vision_cycle_label_2.setGeometry(right_x2, 8, 168, 14)
-            if self._vision_serial_label_2 is not None:
-                self._vision_serial_label_2.setGeometry(right_x2 - 52, 24, 220, 14)
-            if self._vision_rotate_left_button_2 is not None:
-                self._vision_rotate_left_button_2.raise_()
-            if self._vision_rotate_zero_button_2 is not None:
-                self._vision_rotate_zero_button_2.raise_()
-            if self._vision_rotate_right_button_2 is not None:
-                self._vision_rotate_right_button_2.raise_()
+            right_x = max(S(160, 120), w - S(180, 136))
+            cycle_label.setGeometry(right_x, S(8, 5), S(168, 128), S(14, 10))
+            cycle_label.setStyleSheet(cycle_style)
+            if serial_label is not None:
+                serial_label.setGeometry(right_x - S(52, 38), S(24, 17), S(220, 170), S(14, 10))
+                serial_label.setStyleSheet(cycle_style)
+
+            header_bottom = S(92, 68)
+            try:
+                if view_widget is not None and view_widget.parentWidget() is parent:
+                    header_bottom = max(header_bottom, int(view_widget.geometry().y()) - S(2, 1))
+            except Exception:
+                pass
+            btn_h = S(24, 18)
+            state_bottom = S(54, 40)
+            try:
+                if state_label is not None and state_label.parentWidget() is parent:
+                    state_bottom = max(state_bottom, int(state_label.geometry().bottom()))
+            except Exception:
+                pass
+            header_top = max(S(56, 44), state_bottom + S(12, 8))
+            header_limit = max(header_top, header_bottom - btn_h - S(2, 1))
+            btn_y = min(header_limit, header_bottom - btn_h)
+            btn_font = QFont(UI_FONT_FAMILY, int(round(max(7.0, 9.0 * self._ui_text_scale()))))
+
+            btn_x = max(0, w - S(12, 8) - S(86, 68))
+            if serial_button is not None:
+                btn_w = max(S(86, 68), int(serial_button.width() * max(0.85, self._ui_text_scale())))
+                btn_x = max(0, int(w) - btn_w - S(12, 8))
+                serial_button.setGeometry(btn_x, btn_y, btn_w, btn_h)
+                try:
+                    serial_button.setFont(QFont(btn_font))
+                except Exception:
+                    pass
+                serial_button.raise_()
+
+            rot_w = max(S(50, 40), int(round(56.0 * self._ui_text_scale())))
+            rot_h = S(20, 16)
+            rot_x1 = S(10, 6)
+            rot_gap = S(6, 4)
+            rot_x2 = rot_x1 + rot_w + rot_gap
+            rot_x3 = rot_x2 + rot_w + rot_gap
+            if rot_left is not None:
+                rot_left.setGeometry(rot_x1, btn_y, rot_w, rot_h)
+                rot_left.setFont(QFont(btn_font))
+                rot_left.raise_()
+            if rot_zero is not None:
+                rot_zero.setGeometry(rot_x2, btn_y, rot_w, rot_h)
+                rot_zero.setFont(QFont(btn_font))
+                rot_zero.raise_()
+            if rot_right is not None:
+                rot_right.setGeometry(rot_x3, btn_y, rot_w, rot_h)
+                rot_right.setFont(QFont(btn_font))
+                rot_right.raise_()
+            if rot_label is not None:
+                rot_lbl_x = rot_x3 + rot_w + S(8, 6)
+                rot_lbl_w = max(S(70, 54), btn_x - rot_lbl_x - S(6, 4))
+                rot_label.setGeometry(rot_lbl_x, btn_y + S(2, 1), rot_lbl_w, S(14, 10))
+                rot_label.setStyleSheet(cycle_style)
+
+        _place_vision_header(
+            getattr(self, "_vision_cycle_label", None),
+            getattr(self, "_vision_serial_label", None),
+            getattr(self, "_vision_serial_change_button", None),
+            getattr(self, "_vision_rotate_left_button", None),
+            getattr(self, "_vision_rotate_zero_button", None),
+            getattr(self, "_vision_rotate_right_button", None),
+            getattr(self, "_vision_rotation_label", None),
+            getattr(self, "yolo_view", None),
+            getattr(self, "_vision_state_label", None),
+        )
+        _place_vision_header(
+            getattr(self, "_vision_cycle_label_2", None),
+            getattr(self, "_vision_serial_label_2", None),
+            getattr(self, "_vision_serial_change_button_2", None),
+            getattr(self, "_vision_rotate_left_button_2", None),
+            getattr(self, "_vision_rotate_zero_button_2", None),
+            getattr(self, "_vision_rotate_right_button_2", None),
+            getattr(self, "_vision_rotation_label_2", None),
+            getattr(self, "yolo_view_2", None),
+            None,
+        )
         if hasattr(self, "_robot_cycle_label") and self._robot_cycle_label is not None:
             parent = self._robot_cycle_label.parentWidget()
             w = parent.width() if parent is not None else 531
-            self._robot_cycle_label.setGeometry(max(240, w - 190), 8, 178, 14)
+            self._robot_cycle_label.setGeometry(max(S(180, 130), w - S(190, 140)), S(8, 5), S(178, 130), S(14, 10))
+            self._robot_cycle_label.setStyleSheet(cycle_style)
 
     def _maybe_update_cycle_time_labels_from_vision(self):
         now = time.monotonic()
@@ -8902,6 +9282,10 @@ class App(QMainWindow, form):
         f = QFont(base_font)
         f.setPointSizeF(new_pt)
         table.setFont(f)
+        try:
+            table.verticalHeader().setDefaultSectionSize(max(8, int(round(UI_PANEL_TABLE_ROW_HEIGHT * scale))))
+        except Exception:
+            pass
 
         hh = table.horizontalHeader()
         if hh is not None:
@@ -9303,11 +9687,364 @@ class App(QMainWindow, form):
         self._layout_control_buttons()
 
     def _setup_gripper_manual_controls(self):
-        # UI widgets are now defined in developer_frontend.ui
+        # Gripper manual widgets are already defined by Ui_MainWindow runtime code.
         return
 
     def _layout_control_buttons(self):
-        # Geometry is controlled by developer_frontend.ui; enforce only z-order here.
+        # Keep robot panel widgets inside the frame even when dashboard is scaled.
+        panel = getattr(self, "frame_2", None)
+        if panel is not None:
+            s = float(getattr(self, "_dashboard_layout_scale", 1.0) or 1.0)
+
+            def S(v, mn=1):
+                return max(int(mn), int(round(float(v) * s)))
+
+            pad = S(10, 6)
+            top_y = S(102, 74)
+            row_gap = S(10, 6)
+            col_gap = S(10, 6)
+            pw = int(panel.width())
+            ph = int(panel.height())
+
+            # Keep robot header widgets aligned with voice-order header when scaled.
+            robot_toggle = getattr(self, "top_status_robot_toggle", None)
+            robot_dot = getattr(self, "top_status_robot_dot", None)
+            robot_text = getattr(self, "top_status_robot_text", None)
+            header_toggle_y = S(10, 6)
+            header_dot_y = S(36, 26)
+            if robot_toggle is not None:
+                robot_toggle.setGeometry(pad, header_toggle_y, S(71, 56), S(20, 16))
+            if robot_dot is not None:
+                robot_dot.setGeometry(0, header_dot_y, S(41, 30), S(41, 30))
+            if robot_text is not None:
+                text_x = S(44, 30)
+                text_w = max(S(140, 104), pw - text_x - pad - S(96, 70))
+                robot_text.setGeometry(
+                    text_x,
+                    max(0, header_dot_y - S(10, 8)),
+                    text_w,
+                    S(61, 48),
+                )
+
+            state_label = robot_text if isinstance(robot_text, QLabel) else getattr(self, "robot_state_label", None)
+            if isinstance(state_label, QLabel):
+                try:
+                    top_y = max(top_y, int(state_label.geometry().bottom()) + S(18, 13))
+                except Exception:
+                    pass
+            # Resolution-proportional compact ratio:
+            # 2560x1600(=scale 1.0) -> 0.0, 1920x1200(=scale ~0.75) -> 1.0
+            compact_ratio = max(0.0, min(1.0, (1.0 - s) / 0.25))
+            low_res = compact_ratio > 0.0
+            table_lift = int(round(float(S(10, 7)) * compact_ratio)) if low_res else 0
+            if table_lift > 0:
+                # Move tool/table block slightly upward into available top whitespace.
+                top_y = max(S(92, 68), top_y - table_lift)
+            avail_w = max(180, pw - (pad * 2))
+            avail_h = max(180, ph - top_y - pad)
+
+            jt = getattr(self, "joint_table", None)
+            ct = getattr(self, "cart_table", None)
+            st = getattr(self, "robot_state_table", None)
+            motion_h = max(S(112, 84), min(S(148, 110), int(avail_h * 0.30)))
+            bottom_h = max(S(102, 76), min(S(131, 96), int(avail_h * 0.27)))
+            table_h = max(S(104, 78), avail_h - motion_h - bottom_h - (row_gap * 2))
+            overflow = (table_h + motion_h + bottom_h + (row_gap * 2)) - avail_h
+            if overflow > 0:
+                reduce_motion = min(max(0, motion_h - S(70, 52)), overflow)
+                motion_h -= reduce_motion
+                overflow -= reduce_motion
+            if overflow > 0:
+                reduce_bottom = min(max(0, bottom_h - S(72, 54)), overflow)
+                bottom_h -= reduce_bottom
+                overflow -= reduce_bottom
+            table_h = max(S(104, 78), avail_h - motion_h - bottom_h - (row_gap * 2))
+            if table_lift > 0:
+                # Grow table height downward by the same amount we lifted it.
+                table_h += table_lift
+
+            table_font_scale = max(0.30, min(1.0, self._ui_text_scale() * (float(table_h) / float(max(1, S(195, 130))))))
+            for t in (jt, ct, st):
+                if t is not None:
+                    try:
+                        t.setMinimumHeight(0)
+                        t.setMaximumHeight(16777215)
+                        self._apply_table_font_scale(t, table_font_scale)
+                        rows = max(1, int(t.rowCount()))
+                        try:
+                            t.verticalHeader().setSectionResizeMode(QHeaderView.Fixed)
+                        except Exception:
+                            pass
+                        # Keep header readability; shrink body rows first.
+                        if low_res:
+                            header_h = max(S(17, 13), min(S(22, 16), int(t.horizontalHeader().height())))
+                        else:
+                            header_h = max(S(15, 12), min(S(20, 15), int(t.horizontalHeader().height())))
+                        t.horizontalHeader().setFixedHeight(header_h)
+                        if low_res:
+                            # Header stays larger; compress only body rows so all 6 rows remain visible.
+                            hf = QFont(t.horizontalHeader().font())
+                            hf.setPointSizeF(max(7.6, 9.0 * self._ui_text_scale()))
+                            t.horizontalHeader().setFont(hf)
+                            body_h = max(0, table_h - header_h - S(10, 7))
+                            # Fill table body with row heights (no upper cap), so blank area does not remain.
+                            row_h = max(S(4, 2), int(body_h / rows))
+                        else:
+                            available_rows_h = max(0, table_h - header_h - S(8, 5))
+                            # Fill body height with rows to avoid large blank space at 2560.
+                            row_h = max(S(4, 2), int(available_rows_h / rows))
+                        t.verticalHeader().setDefaultSectionSize(row_h)
+                        for r in range(rows):
+                            t.setRowHeight(r, row_h)
+                    except Exception:
+                        pass
+            col_w = max(S(86, 72), int((avail_w - (col_gap * 2)) / 3))
+            used_w = (col_w * 3) + (col_gap * 2)
+            x0 = pad + max(0, int((avail_w - used_w) / 2))
+            if jt is not None:
+                jt.setGeometry(x0, top_y, col_w, table_h)
+            if ct is not None:
+                ct.setGeometry(x0 + col_w + col_gap, top_y, col_w, table_h)
+            if st is not None:
+                st.setGeometry(x0 + ((col_w + col_gap) * 2), top_y, col_w, table_h)
+            tool_lbl = getattr(self, "current_tool_label", None)
+            if tool_lbl is not None:
+                tool_h = S(16, 12)
+                tool_y = max(S(56, 42), top_y - tool_h - S(2, 1))
+                tool_lbl.setGeometry(pad, tool_y, max(S(120, 96), avail_w - S(12, 8)), tool_h)
+                tool_pt = max(6.0, 7.6 * self._ui_text_scale())
+                tool_lbl.setFont(QFont(UI_FONT_FAMILY, int(round(tool_pt))))
+                tool_lbl.setStyleSheet(f"color: #334155; font-size: {tool_pt:.1f}pt; font-weight: 600;")
+
+            motion_box = getattr(self, "motion_group_box", None)
+            vision_box = getattr(self, "vision_group_box", None)
+            grip_box = getattr(self, "gripper_manual_box", None)
+            motion_y = top_y + table_h + row_gap
+            if motion_box is not None:
+                motion_box.setGeometry(pad, motion_y, avail_w, motion_h)
+
+                in_pad = S(10, 6)
+                btn_gap_x = S(10, 6)
+                btn_gap_y = S(8, 5)
+                btn_h = S(41, 30)
+                content_w = max(120, motion_box.width() - (in_pad * 2))
+                btn_w = max(68, int((content_w - (btn_gap_x * 3)) / 4))
+                col1_x = in_pad
+                col2_x = col1_x + btn_w + btn_gap_x
+                col3_x = col2_x + btn_w + btn_gap_x
+                col4_x = col3_x + btn_w + btn_gap_x
+
+                header_y = S(7, 5)
+                header_h = S(22, 16)
+                if self._motion_group_title is not None:
+                    title_w = max(S(120, 90), int(content_w * 0.30))
+                    self._motion_group_title.setGeometry(in_pad, header_y, title_w, header_h)
+                    motion_title_pt = max(7.2, 11.0 * self._ui_text_scale())
+                    self._motion_group_title.setFont(QFont(UI_FONT_FAMILY, int(round(motion_title_pt))))
+                    self._motion_group_title.setStyleSheet(f"color: #1f3b63; font-size: {motion_title_pt:.1f}pt; font-weight: 800;")
+                spd_title = getattr(self, "_motion_speed_title_label", None)
+                spd_slider = getattr(self, "_motion_speed_slider", None)
+                spd_value = getattr(self, "_motion_speed_value_label", None)
+                if spd_title is not None and spd_slider is not None and spd_value is not None:
+                    speed_row_y = header_y
+                    speed_block_w = max(S(188, 136), int(content_w * 0.56))
+                    speed_x = max(in_pad + max(S(120, 90), int(content_w * 0.30)) + S(8, 6), motion_box.width() - in_pad - speed_block_w)
+                    spd_title_w = max(S(94, 72), int(speed_block_w * 0.38))
+                    spd_slider_w = max(S(88, 68), int(speed_block_w * 0.40))
+                    spd_value_w = max(S(34, 26), speed_block_w - spd_title_w - spd_slider_w - S(10, 8))
+                    spd_title.setGeometry(speed_x, speed_row_y, spd_title_w, header_h)
+                    spd_slider.setGeometry(speed_x + spd_title_w + S(5, 4), speed_row_y, spd_slider_w, header_h)
+                    spd_value.setGeometry(speed_x + spd_title_w + S(5, 4) + spd_slider_w + S(5, 4), speed_row_y, spd_value_w, header_h)
+                    spd_title.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+
+                btn_rows_offset_y = S(4, 3)
+                row1_y = header_y + header_h + S(8, 6) + btn_rows_offset_y
+                row2_y = row1_y + btn_h + btn_gap_y
+                btn_bottom_space = motion_box.height() - row2_y - S(4, 3)
+                if btn_bottom_space < btn_h:
+                    btn_h = max(S(28, 22), int((motion_box.height() - row1_y - btn_gap_y - S(4, 3)) / 2))
+                    row2_y = row1_y + btn_h + btn_gap_y
+
+                if self._home_button is not None:
+                    self._home_button.setGeometry(col1_x, row1_y, btn_w, btn_h)
+                if self._print_pos_button is not None:
+                    self._print_pos_button.setGeometry(col2_x, row1_y, btn_w, btn_h)
+                if self._robot_mode_button is not None:
+                    self._robot_mode_button.setGeometry(col3_x, row1_y, btn_w, btn_h)
+                if self._reset_button is not None:
+                    self._reset_button.setGeometry(col4_x, row1_y, btn_w, btn_h)
+                if self._home_save_button is not None:
+                    self._home_save_button.setGeometry(col1_x, row2_y, btn_w, btn_h)
+                if self.pushButton is not None:
+                    self.pushButton.setGeometry(col2_x, row2_y, btn_w, btn_h)
+                if self._tool_change_button is not None:
+                    self._tool_change_button.setGeometry(col3_x, row2_y, btn_w, btn_h)
+                if self._emergency_stop_button is not None:
+                    self._emergency_stop_button.setGeometry(col4_x, row2_y, btn_w, btn_h)
+
+            bottom_y = motion_y + motion_h + row_gap
+            bottom_h = max(S(100, 74), ph - bottom_y - pad)
+            box_gap = S(10, 6)
+            vision_w = max(140, int((avail_w - box_gap) * 0.60))
+            grip_w = max(120, avail_w - vision_w - box_gap)
+            if vision_box is not None:
+                vision_box.setGeometry(pad, bottom_y, vision_w, bottom_h)
+                vb_w = int(vision_box.width())
+                vb_h = int(vision_box.height())
+                inner_pad = S(10, 6)
+                content_bottom = max(inner_pad, vb_h - S(8, 6))
+                toggle_h = S(34, 24)
+                toggle_y = S(4, 2)
+                toggle_bottom = toggle_y + toggle_h
+                if self._vision_dialog_toggle_switch is not None:
+                    self._vision_dialog_toggle_switch.setGeometry(inner_pad, toggle_y, max(S(120, 90), vb_w - (inner_pad * 2)), toggle_h)
+                    self._apply_scaled_toggle_style(self._vision_dialog_toggle_switch, base_font_pt=9.2, base_w=34, base_h=18, pad_left=3)
+                input_gap = S(6, 4)
+                right_block_w = max(S(126, 96), int(vb_w * 0.56))
+                input_w = max(S(34, 26), int((right_block_w - (input_gap * 2)) / 3))
+                x1 = max(inner_pad, vb_w - S(12, 8) - ((input_w * 3) + (input_gap * 2)))
+                x2 = x1 + input_w + S(6, 4)
+                x3 = x2 + input_w + S(6, 4)
+                title_h = S(16, 12)
+                axis_h = S(16, 12)
+                input_h = S(24, 18)
+                move_btn_h = S(24, 18)
+                move_btn_w = max(S(86, 66), int(vb_w * 0.42))
+                content_top = toggle_bottom + S(3, 2)
+                v_gap_1 = S(4, 2)
+                v_gap_2 = S(4, 2)
+                required_h = axis_h + v_gap_1 + input_h + v_gap_2 + move_btn_h
+                available_h = max(0, content_bottom - content_top)
+                if required_h > available_h:
+                    shrink = required_h - available_h
+                    dec_move = min(shrink, max(0, move_btn_h - S(20, 14)))
+                    move_btn_h -= dec_move
+                    shrink -= dec_move
+                    dec_input = min(shrink, max(0, input_h - S(20, 14)))
+                    input_h -= dec_input
+                    shrink -= dec_input
+                    dec_axis = min(shrink, max(0, axis_h - S(12, 9)))
+                    axis_h -= dec_axis
+                axis_y = content_top
+                input_y = axis_y + axis_h + v_gap_1
+                move_btn_y = input_y + input_h + v_gap_2
+                if move_btn_y + move_btn_h > content_bottom:
+                    move_btn_y = max(content_top, content_bottom - move_btn_h)
+                    if input_y + input_h + v_gap_2 > move_btn_y:
+                        input_y = max(content_top, move_btn_y - v_gap_2 - input_h)
+                    if axis_y + axis_h + v_gap_1 > input_y:
+                        axis_y = max(content_top, input_y - v_gap_1 - axis_h)
+                axis_mid_y = axis_y + int(axis_h / 2)
+                input_mid_y = input_y + int(input_h / 2)
+                mid_row_center_y = int(round((axis_mid_y + input_mid_y) / 2.0))
+                title_y = max(content_top, mid_row_center_y - int(title_h / 2))
+                if self._vision_z_title_label is not None:
+                    self._vision_z_title_label.setStyleSheet(f"color: #205c2f; font-size: {max(6.0, 7.5 * self._ui_text_scale()):.1f}pt; font-weight: 700;")
+                    title_w = max(S(96, 72), x1 - S(12, 8))
+                    self._vision_z_title_label.setGeometry(inner_pad, title_y, title_w, title_h)
+                if self._vision_x_axis_label is not None:
+                    self._vision_x_axis_label.setStyleSheet(f"color: #205c2f; font-size: {max(7.0, 9.0 * self._ui_text_scale()):.1f}pt; font-weight: 700;")
+                    self._vision_x_axis_label.setGeometry(x1, axis_y, input_w, axis_h)
+                    self._vision_x_axis_label.setAlignment(Qt.AlignCenter)
+                if self._vision_y_axis_label is not None:
+                    self._vision_y_axis_label.setStyleSheet(f"color: #205c2f; font-size: {max(7.0, 9.0 * self._ui_text_scale()):.1f}pt; font-weight: 700;")
+                    self._vision_y_axis_label.setGeometry(x2, axis_y, input_w, axis_h)
+                    self._vision_y_axis_label.setAlignment(Qt.AlignCenter)
+                if self._vision_z_axis_label is not None:
+                    self._vision_z_axis_label.setStyleSheet(f"color: #205c2f; font-size: {max(7.0, 9.0 * self._ui_text_scale()):.1f}pt; font-weight: 700;")
+                    self._vision_z_axis_label.setGeometry(x3, axis_y, input_w, axis_h)
+                    self._vision_z_axis_label.setAlignment(Qt.AlignCenter)
+                if self._vision_x_margin_input is not None:
+                    self._vision_x_margin_input.setGeometry(x1, input_y, input_w, input_h)
+                if self._vision_y_margin_input is not None:
+                    self._vision_y_margin_input.setGeometry(x2, input_y, input_w, input_h)
+                if self._vision_z_margin_input is not None:
+                    self._vision_z_margin_input.setGeometry(x3, input_y, input_w, input_h)
+                if self._vision_z_range_label is not None:
+                    self._vision_z_range_label.setStyleSheet(f"color: #334155; font-size: {max(6.8, 8.8 * self._ui_text_scale()):.1f}pt;")
+                    range_w = max(S(120, 88), vb_w - move_btn_w - S(24, 16))
+                    self._vision_z_range_label.setGeometry(inner_pad, move_btn_y, range_w, move_btn_h)
+                if self._vision_move_button is not None:
+                    self._vision_move_button.setGeometry(vb_w - S(10, 6) - move_btn_w, move_btn_y, move_btn_w, move_btn_h)
+
+            if grip_box is not None:
+                grip_box.setGeometry(pad + vision_w + box_gap, bottom_y, grip_w, bottom_h)
+                gb_w = int(grip_box.width())
+                gb_h = int(grip_box.height())
+                g_pad = S(10, 6)
+                g_title_h = S(20, 14)
+                g_range_h = S(20, 14)
+                g_input_h = S(32, 24)
+                g_btn_h = S(31, 24)
+                g_gap_1 = S(2, 1)
+                g_gap_2 = S(4, 2)
+                g_gap_3 = S(8, 6)
+                g_content_top = g_pad
+                g_content_bottom = max(g_content_top, gb_h - S(8, 6))
+                g_required = g_title_h + g_gap_1 + g_range_h + g_gap_2 + g_input_h + g_gap_3 + g_btn_h
+                g_available = max(0, g_content_bottom - g_content_top)
+                if g_required > g_available:
+                    g_shrink = g_required - g_available
+                    g_dec_btn = min(g_shrink, max(0, g_btn_h - S(24, 18)))
+                    g_btn_h -= g_dec_btn
+                    g_shrink -= g_dec_btn
+                    g_dec_input = min(g_shrink, max(0, g_input_h - S(24, 18)))
+                    g_input_h -= g_dec_input
+                    g_shrink -= g_dec_input
+                    g_dec_range = min(g_shrink, max(0, g_range_h - S(16, 12)))
+                    g_range_h -= g_dec_range
+                    g_shrink -= g_dec_range
+                    g_dec_title = min(g_shrink, max(0, g_title_h - S(16, 12)))
+                    g_title_h -= g_dec_title
+                g_title_y = g_content_top
+                g_range_y = g_title_y + g_title_h + g_gap_1
+                g_input_y = g_range_y + g_range_h + g_gap_2
+                g_btn_y = g_input_y + g_input_h + g_gap_3
+                if g_btn_y + g_btn_h > g_content_bottom:
+                    g_btn_y = max(g_content_top, g_content_bottom - g_btn_h)
+                if self._gripper_range_title_label is not None:
+                    self._gripper_range_title_label.setStyleSheet(f"color: #1f3b63; font-size: {max(7.0, 9.5 * self._ui_text_scale()):.1f}pt; font-weight: 700;")
+                    self._gripper_range_title_label.setGeometry(g_pad, g_title_y, gb_w - (g_pad * 2), g_title_h)
+                if self._gripper_range_value_label is not None:
+                    self._gripper_range_value_label.setStyleSheet(f"color: #334155; font-size: {max(6.8, 8.8 * self._ui_text_scale()):.1f}pt;")
+                    self._gripper_range_value_label.setGeometry(g_pad, g_range_y, gb_w - (g_pad * 2), g_range_h)
+                if self._gripper_stroke_input is not None:
+                    self._gripper_stroke_input.setGeometry(g_pad, g_input_y, gb_w - (g_pad * 2), g_input_h)
+                if self._gripper_move_button is not None:
+                    self._gripper_move_button.setGeometry(g_pad, g_btn_y, gb_w - (g_pad * 2), g_btn_h)
+
+            if hasattr(self, "_robot_cycle_label") and self._robot_cycle_label is not None:
+                self._robot_cycle_label.setGeometry(max(S(180, 130), pw - S(190, 140)), S(8, 5), S(178, 130), S(14, 10))
+            # Robot/vision control fonts: scale with resolution.
+            ctrl_pt = max(7.0, 9.0 * self._ui_text_scale())
+            ctrl_font = QFont(UI_FONT_FAMILY, int(round(ctrl_pt)))
+            for w in [
+                self._vision_group_title,
+                self._gripper_range_title_label,
+                self._gripper_range_value_label,
+                self._vision_z_title_label,
+                self._vision_z_range_label,
+                self._vision_x_axis_label,
+                self._vision_y_axis_label,
+                self._vision_z_axis_label,
+                self._home_button,
+                self._home_save_button,
+                self.pushButton,
+                self._print_pos_button,
+                self._robot_mode_button,
+                self._tool_change_button,
+                self._reset_button,
+                self._emergency_stop_button,
+                self._gripper_move_button,
+                self._vision_move_button,
+            ]:
+                if w is None:
+                    continue
+                try:
+                    w.setFont(QFont(ctrl_font))
+                except Exception:
+                    pass
+
         if self._calibration_mode_switch is not None and self._calibration_mode_switch_2 is not None:
             try:
                 g1 = self._calibration_mode_switch.geometry()
@@ -9940,6 +10677,10 @@ class App(QMainWindow, form):
         box = getattr(self, "calibration_group_box_2", None) if panel == 2 else getattr(self, "calibration_group_box", None)
         if box is None:
             return
+        s = float(getattr(self, "_dashboard_layout_scale", 1.0) or 1.0)
+        def S(v, mn=1):
+            return max(int(mn), int(round(float(v) * s)))
+        ts = self._ui_text_scale()
         calib_on = bool(self._calibration_mode_enabled_2) if panel == 2 else bool(self._calibration_mode_enabled_1)
         switch = self._calibration_mode_switch_2 if panel == 2 else self._calibration_mode_switch
         status_label = self._calibration_status_label_2 if panel == 2 else self._calibration_status_label
@@ -9951,44 +10692,71 @@ class App(QMainWindow, form):
         detail = self._vision_runtime_detail_label_2 if panel == 2 else self._vision_runtime_detail_label_1
         data = self._vision_runtime_list_label_2 if panel == 2 else self._vision_runtime_list_label_1
 
-        margin_x = 14
-        margin_right = 8
-        top_y = 10
-        box_w = max(460, int(box.width()))
-        box_h = max(110, int(box.height()))
-        content_w = max(220, box_w - (margin_x * 2))
-        switch_w = 50
-        gap = 10
-        meta_rate_w = 86
-        badge_w = min(max(118, content_w - switch_w - (gap * 2) - 8), max(118, content_w - 100))
+        margin_x = S(14, 8)
+        margin_right = S(8, 4)
+        top_y = S(10, 6)
+        box_w = max(S(220, 170), int(box.width()))
+        box_h = max(S(96, 74), int(box.height()))
+        content_w = max(S(160, 124), box_w - (margin_x * 2))
+        switch_w = S(50, 40)
+        switch_h = S(18, 14)
+        gap = S(10, 6)
+        meta_rate_w = S(86, 64)
+        badge_h = S(24, 18)
+        badge_w = min(max(S(118, 90), content_w - switch_w - (gap * 2) - S(8, 6)), max(S(118, 90), content_w - S(100, 76)))
         if badge is not None:
-            badge.setGeometry(margin_x, top_y, badge_w, 24)
+            badge.setGeometry(margin_x, top_y, badge_w, badge_h)
             badge.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+            try:
+                badge.setFont(QFont(UI_FONT_FAMILY, int(round(max(8.0, 11.0 * ts)))))
+            except Exception:
+                pass
             badge.raise_()
         if rate_label is not None:
             if calib_on:
                 rate_label.setGeometry(0, 0, 0, 0)
             else:
-                rate_label.setGeometry(box_w - margin_right - meta_rate_w, box_h - 24, meta_rate_w, 16)
+                rate_label.setGeometry(box_w - margin_right - meta_rate_w, box_h - S(24, 18), meta_rate_w, S(16, 12))
             rate_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            try:
+                rate_label.setFont(QFont(UI_FONT_FAMILY, int(round(max(6.0, 7.8 * ts)))))
+            except Exception:
+                pass
             rate_label.raise_()
         if switch is not None:
-            switch.setGeometry(box_w - margin_right - switch_w, top_y + 2, switch_w, 18)
+            switch.setGeometry(box_w - margin_right - switch_w, top_y + S(2, 1), switch_w, switch_h)
+            try:
+                switch.setFont(QFont(UI_FONT_FAMILY, int(round(max(6.0, 7.0 * ts)))))
+            except Exception:
+                pass
             switch.raise_()
+        status_y = top_y + badge_h + S(4, 3)
         if status_label is not None:
-            status_label.setGeometry(margin_x, 36, content_w, 86 if not calib_on else 20)
+            status_h = S(20, 14) if calib_on else max(S(52, 38), box_h - status_y - S(8, 6))
+            status_label.setGeometry(margin_x, status_y, content_w, status_h)
             status_label.setAlignment(Qt.AlignLeft | Qt.AlignTop)
             status_label.setWordWrap(True)
+            try:
+                status_label.setFont(QFont(UI_FONT_FAMILY, int(round(max(7.0, 9.5 * ts)))))
+            except Exception:
+                pass
             status_label.raise_()
         if calib_on:
+            row_y = status_y + S(22, 16)
+            load_w = S(82, 64)
+            load_h = S(26, 20)
+            transform_h = S(30, 22)
             if matrix_label is not None:
-                matrix_label.setGeometry(margin_x, 56, content_w - 92, 22)
+                matrix_w = max(S(96, 72), content_w - load_w - S(10, 6))
+                matrix_label.setGeometry(margin_x, row_y, matrix_w, S(18, 14))
                 matrix_label.raise_()
             if load_button is not None:
-                load_button.setGeometry(box_w - margin_x - 82, 54, 82, 26)
+                load_button.setGeometry(box_w - margin_x - load_w, row_y - S(2, 1), load_w, load_h)
                 load_button.raise_()
             if transform_button is not None:
-                transform_button.setGeometry(margin_x, 86, content_w, 32)
+                transform_y = row_y + load_h + S(4, 3)
+                transform_h = max(transform_h, box_h - transform_y - S(6, 4))
+                transform_button.setGeometry(margin_x, transform_y, content_w, transform_h)
                 transform_button.raise_()
             if detail is not None:
                 detail.setGeometry(0, 0, 0, 0)
@@ -9997,6 +10765,12 @@ class App(QMainWindow, form):
                 data.setGeometry(0, 0, 0, 0)
                 data.hide()
         else:
+            if matrix_label is not None:
+                matrix_label.hide()
+            if load_button is not None:
+                load_button.hide()
+            if transform_button is not None:
+                transform_button.hide()
             if detail is not None:
                 detail.setGeometry(0, 0, 0, 0)
                 detail.hide()
@@ -10217,6 +10991,7 @@ class App(QMainWindow, form):
         detail = self._vision_runtime_detail_label_2 if panel == 2 else self._vision_runtime_detail_label_1
         data = self._vision_runtime_list_label_2 if panel == 2 else self._vision_runtime_list_label_1
         runtime = self._vision_runtime_summary(panel)
+        ts = self._ui_text_scale()
 
         self._layout_vision_mode_box(panel)
 
@@ -10225,12 +11000,14 @@ class App(QMainWindow, form):
             switch.setText("TF")
             switch.setToolTip("TF 모드 변경 스위치")
             switch.blockSignals(False)
-            switch.setStyleSheet("font-size: 7pt; font-weight: 700; padding-left: 2px;")
+            self._apply_scaled_checkbox_style(switch, base_font_pt=7.0, base_ind=12, pad_left=1)
         if badge is not None:
             badge_title = self._vision_panel_mode_name(panel, calib_on=calib_on)
             badge.setTextFormat(Qt.PlainText)
             badge.setText(badge_title)
-            badge.setStyleSheet("color: #1f2937; background: transparent; border: none; font-size: 11pt; font-weight: 800;")
+            badge.setStyleSheet(
+                f"color: #1f2937; background: transparent; border: none; font-size: {max(7.2, 11.0 * ts):.1f}pt; font-weight: 800;"
+            )
             badge.show()
         if rate_label is not None:
             if calib_on:
@@ -10239,7 +11016,9 @@ class App(QMainWindow, form):
             else:
                 rate_text = str(runtime.get("meta_rate_text", "") or "-")
                 rate_label.setText(f"메타 {rate_text}")
-                rate_label.setStyleSheet("color: #475569; background: transparent; border: none; font-size: 7.8pt; font-weight: 700;")
+                rate_label.setStyleSheet(
+                    f"color: #475569; background: transparent; border: none; font-size: {max(6.0, 7.8 * ts):.1f}pt; font-weight: 700;"
+                )
                 rate_label.show()
         if status_label is not None and (not calib_on):
             status_label.setVisible(True)
@@ -10247,11 +11026,11 @@ class App(QMainWindow, form):
             summary_lines = [str(line).strip() for line in list(runtime.get("summary_lines", []) or []) if str(line).strip()]
             if summary_lines:
                 status_html = (
-                    f"<div style='font-size:9.5pt; font-weight:800; color:{html.escape(str(runtime.get('status_color', '#2e7d32')))};'>"
+                    f"<div style='font-size:{max(7.0, 9.5 * ts):.1f}pt; font-weight:800; color:{html.escape(str(runtime.get('status_color', '#2e7d32')))};'>"
                     f"{html.escape(status_text)}</div>"
                 )
                 for idx, line in enumerate(summary_lines):
-                    font_size = "7.6pt" if idx == 0 else "7.2pt"
+                    font_size = f"{max(6.2, (7.6 if idx == 0 else 7.2) * ts):.1f}pt"
                     status_html += (
                         f"<div style='font-size:{font_size}; font-weight:600; color:#475569; margin-top:1px;'>"
                         f"{html.escape(line)}</div>"
@@ -10262,7 +11041,9 @@ class App(QMainWindow, form):
             else:
                 status_label.setTextFormat(Qt.PlainText)
                 status_label.setText(status_text)
-                status_label.setStyleSheet(runtime["status_style"])
+                status_label.setStyleSheet(
+                    f"color: {str(runtime.get('status_color', '#2e7d32'))}; font-size: {max(7.0, 9.5 * ts):.1f}pt; font-weight: 800;"
+                )
         if matrix_label is not None:
             if calib_on:
                 matrix_label.show()
@@ -10280,6 +11061,7 @@ class App(QMainWindow, form):
             transform_button.hide()
 
     def _update_calibration_mode_ui(self):
+        ts = self._ui_text_scale()
         calib_on_1 = bool(getattr(self, "_calibration_mode_enabled_1", False))
         calib_on_2 = bool(getattr(self, "_calibration_mode_enabled_2", False))
         calib_on = bool(calib_on_1 or calib_on_2)
@@ -10295,14 +11077,14 @@ class App(QMainWindow, form):
             self._calibration_mode_switch.setText("TF")
             self._calibration_mode_switch.setToolTip("객체인식/TF 모드 변경")
             self._calibration_mode_switch.blockSignals(False)
-            self._calibration_mode_switch.setStyleSheet("font-size: 7pt; font-weight: 700; padding-left: 2px;")
+            self._apply_scaled_checkbox_style(self._calibration_mode_switch, base_font_pt=7.0, base_ind=12, pad_left=1)
         if hasattr(self, "_calibration_mode_switch_2") and self._calibration_mode_switch_2 is not None:
             self._calibration_mode_switch_2.blockSignals(True)
             self._calibration_mode_switch_2.setChecked(calib_on_2)
             self._calibration_mode_switch_2.setText("TF")
             self._calibration_mode_switch_2.setToolTip("용량인식/TF 모드 변경")
             self._calibration_mode_switch_2.blockSignals(False)
-            self._calibration_mode_switch_2.setStyleSheet("font-size: 7pt; font-weight: 700; padding-left: 2px;")
+            self._apply_scaled_checkbox_style(self._calibration_mode_switch_2, base_font_pt=7.0, base_ind=12, pad_left=1)
         if hasattr(self, "_calibration_transform_button") and self._calibration_transform_button is not None:
             self._calibration_transform_button.setVisible(calib_on_1)
             self._calibration_transform_button.setEnabled(
@@ -10322,11 +11104,15 @@ class App(QMainWindow, form):
         if hasattr(self, "_calibration_matrix_file_label") and self._calibration_matrix_file_label is not None:
             base = os.path.basename(self._calib_matrix_path_1) if self._calib_matrix_path_1 else "(없음)"
             self._calibration_matrix_file_label.setText(f"현재 적용행렬 : {base}")
-            self._calibration_matrix_file_label.setStyleSheet("color: #666666; font-size: 8pt;")
+            self._calibration_matrix_file_label.setStyleSheet(
+                f"color: #666666; font-size: {max(6.0, 8.0 * ts):.1f}pt;"
+            )
         if hasattr(self, "_calibration_matrix_file_label_2") and self._calibration_matrix_file_label_2 is not None:
             base = os.path.basename(self._calib_matrix_path_2) if self._calib_matrix_path_2 else "(없음)"
             self._calibration_matrix_file_label_2.setText(f"현재 적용행렬 : {base}")
-            self._calibration_matrix_file_label_2.setStyleSheet("color: #666666; font-size: 8pt;")
+            self._calibration_matrix_file_label_2.setStyleSheet(
+                f"color: #666666; font-size: {max(6.0, 8.0 * ts):.1f}pt;"
+            )
         if hasattr(self, "_calibration_status_label") and self._calibration_status_label is not None:
             self._calibration_status_label.setVisible(calib_on_1)
             if calib_on_1:
@@ -10341,23 +11127,23 @@ class App(QMainWindow, form):
                 self._calibration_status_label.setText(status)
                 if calib_detected_1:
                     self._calibration_status_label.setStyleSheet(
-                        "color: #2e7d32; font-size: 10pt; font-weight: 800;"
+                        f"color: #2e7d32; font-size: {max(7.0, 10.0 * ts):.1f}pt; font-weight: 800;"
                     )
                 elif calib_board_detected_1:
                     self._calibration_status_label.setStyleSheet(
-                        "color: #ef6c00; font-size: 10pt; font-weight: 800;"
+                        f"color: #ef6c00; font-size: {max(7.0, 10.0 * ts):.1f}pt; font-weight: 800;"
                     )
                 else:
                     blink_on = bool(getattr(self, "_calib_status_blink_on", False))
                     self._calibration_status_label.setStyleSheet(
-                        "color: #d32f2f; font-size: 10pt; font-weight: 800;"
+                        f"color: #d32f2f; font-size: {max(7.0, 10.0 * ts):.1f}pt; font-weight: 800;"
                         if blink_on
-                        else "color: #f9a825; font-size: 10pt; font-weight: 800;"
+                        else f"color: #f9a825; font-size: {max(7.0, 10.0 * ts):.1f}pt; font-weight: 800;"
                     )
             else:
                 self._calibration_status_label.setText("")
                 self._calibration_status_label.setStyleSheet(
-                    "color: #5f5a1e; font-size: 9pt; font-weight: 700;"
+                    f"color: #5f5a1e; font-size: {max(6.5, 9.0 * ts):.1f}pt; font-weight: 700;"
                 )
         if hasattr(self, "_vision_mode_badge_1") and self._vision_mode_badge_1 is not None:
             self._vision_mode_badge_1.setText(self._vision_panel_mode_name(1, calib_on=calib_on_1))
@@ -10375,23 +11161,23 @@ class App(QMainWindow, form):
                 self._calibration_status_label_2.setText(status)
                 if calib_detected_2:
                     self._calibration_status_label_2.setStyleSheet(
-                        "color: #2e7d32; font-size: 10pt; font-weight: 800;"
+                        f"color: #2e7d32; font-size: {max(7.0, 10.0 * ts):.1f}pt; font-weight: 800;"
                     )
                 elif calib_board_detected_2:
                     self._calibration_status_label_2.setStyleSheet(
-                        "color: #ef6c00; font-size: 10pt; font-weight: 800;"
+                        f"color: #ef6c00; font-size: {max(7.0, 10.0 * ts):.1f}pt; font-weight: 800;"
                     )
                 else:
                     blink_on = bool(getattr(self, "_calib_status_blink_on", False))
                     self._calibration_status_label_2.setStyleSheet(
-                        "color: #d32f2f; font-size: 10pt; font-weight: 800;"
+                        f"color: #d32f2f; font-size: {max(7.0, 10.0 * ts):.1f}pt; font-weight: 800;"
                         if blink_on
-                        else "color: #f9a825; font-size: 10pt; font-weight: 800;"
+                        else f"color: #f9a825; font-size: {max(7.0, 10.0 * ts):.1f}pt; font-weight: 800;"
                     )
             else:
                 self._calibration_status_label_2.setText("")
                 self._calibration_status_label_2.setStyleSheet(
-                    "color: #5f5a1e; font-size: 9pt; font-weight: 700;"
+                    f"color: #5f5a1e; font-size: {max(6.5, 9.0 * ts):.1f}pt; font-weight: 700;"
                 )
         if hasattr(self, "_vision_mode_badge_2") and self._vision_mode_badge_2 is not None:
             self._vision_mode_badge_2.setText(self._vision_panel_mode_name(2, calib_on=calib_on_2))
@@ -14087,20 +14873,6 @@ class App(QMainWindow, form):
         except Exception:
             return
 
-    def _on_preview_point_msg(self, msg):
-        try:
-            # selected_point 직후 잠깐은 선택 좌표 표기를 유지한다.
-            now = time.monotonic()
-            if self._last_vision_point_at is not None and (now - self._last_vision_point_at) < 0.7:
-                return
-            if self._vision_coord_label is not None:
-                self._vision_coord_label.setText(
-                    f"프리뷰 X,Y[m] / Z[mm] : {msg.point.x:+.4f}, {msg.point.y:+.4f}, {msg.point.z * 1000.0:.1f}"
-                )
-                self._vision_coord_label.show()
-        except Exception:
-            return
-
     def _update_yolo_view(self, image: QImage):
         self._enqueue_vision_frame(image)
 
@@ -14140,63 +14912,6 @@ class App(QMainWindow, form):
         self._last_vision_frame_at_2 = t_now
         self._vision_state_text_2 = "정상 수신 중"
 
-    def _maybe_log_vision_render_stall(self, panel_index: int, render_delay_ms):
-        if render_delay_ms is None:
-            return
-        delay_ms = float(render_delay_ms)
-        if delay_ms < float(VISION_RENDER_STALL_WARN_MS):
-            return
-        panel = 2 if int(panel_index) == 2 else 1
-        now = time.monotonic()
-        attr = "_vision_render_stall_last_log_at_2" if panel == 2 else "_vision_render_stall_last_log_at_1"
-        last_at = float(getattr(self, attr, 0.0) or 0.0)
-        if (now - last_at) < float(VISION_RENDER_STALL_LOG_COOLDOWN_SEC):
-            return
-        setattr(self, attr, now)
-        decode_ms = self._vision_decode_ms_2 if panel == 2 else self._vision_decode_ms
-        compose_ms = self._vision_compose_ms_2 if panel == 2 else self._vision_compose_ms
-        self.append_log(
-            f"[UI-PERF][비전{panel}] render_delay={delay_ms:.1f}ms "
-            f"(decode={decode_ms if decode_ms is not None else '-'}ms, "
-            f"compose={compose_ms if compose_ms is not None else '-'}ms)\n"
-        )
-        self._append_ui_perf_log_file(
-            f"[비전{panel}] render_delay={delay_ms:.1f}ms "
-            f"(decode={decode_ms if decode_ms is not None else '-'}ms, "
-            f"compose={compose_ms if compose_ms is not None else '-'}ms)"
-        )
-
-    def _maybe_trace_vision_render_frame(self, panel_index: int):
-        if not bool(VISION_RENDER_TRACE_ENABLED):
-            return
-        panel = 2 if int(panel_index) == 2 else 1
-        now = time.monotonic()
-        attr = "_vision_render_trace_last_log_at_2" if panel == 2 else "_vision_render_trace_last_log_at_1"
-        last_at = float(getattr(self, attr, 0.0) or 0.0)
-        if (now - last_at) < float(VISION_RENDER_TRACE_MIN_INTERVAL_SEC):
-            return
-        setattr(self, attr, now)
-        if panel == 2:
-            delay_ms = self._vision_render_delay_ms_2
-            decode_ms = self._vision_decode_ms_2
-            compose_ms = self._vision_compose_ms_2
-            receive_ms = self._vision_cycle_ms_2
-            render_interval_ms = self._vision_render_interval_ms_2
-        else:
-            delay_ms = self._vision_render_delay_ms
-            decode_ms = self._vision_decode_ms
-            compose_ms = self._vision_compose_ms
-            receive_ms = self._vision_cycle_ms
-            render_interval_ms = self._vision_render_interval_ms
-        self._append_ui_perf_log_file(
-            f"vision_frame_trace[{panel}] "
-            f"delay={float(delay_ms) if delay_ms is not None else -1.0:.1f}ms "
-            f"decode={float(decode_ms) if decode_ms is not None else -1.0:.1f}ms "
-            f"compose={float(compose_ms) if compose_ms is not None else -1.0:.1f}ms "
-            f"receive={float(receive_ms) if receive_ms is not None else -1.0:.1f}ms "
-            f"render_interval={float(render_interval_ms) if render_interval_ms is not None else -1.0:.1f}ms"
-        )
-
     def _drain_pending_vision_frame_1(self):
         with self._vision_frame_lock_1:
             image1 = self._pending_yolo_qimage if self._vision_frame_pending else None
@@ -14210,14 +14925,12 @@ class App(QMainWindow, form):
             now = time.monotonic()
             if enqueued_at_1 is not None:
                 self._vision_render_delay_ms = max(0.0, (now - float(enqueued_at_1)) * 1000.0)
-                self._maybe_log_vision_render_stall(1, self._vision_render_delay_ms)
             if self._vision_render_prev_at is not None:
                 dt = now - self._vision_render_prev_at
                 if dt > 0.0:
                     self._vision_render_interval_ms = dt * 1000.0
             self._vision_render_prev_at = now
             self._last_yolo_qimage = image1
-            self._maybe_trace_vision_render_frame(1)
             self._render_yolo_view()
             self._maybe_update_cycle_time_labels_from_vision()
 
@@ -14234,14 +14947,12 @@ class App(QMainWindow, form):
             now = time.monotonic()
             if enqueued_at_2 is not None:
                 self._vision_render_delay_ms_2 = max(0.0, (now - float(enqueued_at_2)) * 1000.0)
-                self._maybe_log_vision_render_stall(2, self._vision_render_delay_ms_2)
             if self._vision_render_prev_at_2 is not None:
                 dt = now - self._vision_render_prev_at_2
                 if dt > 0.0:
                     self._vision_render_interval_ms_2 = dt * 1000.0
             self._vision_render_prev_at_2 = now
             self._last_yolo_qimage_2 = image2
-            self._maybe_trace_vision_render_frame(2)
             self._render_yolo_view_2()
             self._maybe_update_cycle_time_labels_from_vision()
 
@@ -14714,6 +15425,10 @@ class App(QMainWindow, form):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
+        # Apply layout only once on initial resize event, then ignore runtime resizing.
+        if bool(getattr(self, "_resize_layout_applied_once", False)):
+            return
+        self._resize_layout_applied_once = True
         if not UI_USE_DESIGN_GEOMETRY:
             self._layout_main_frames()
         self._layout_voice_order_panel()

@@ -11,7 +11,6 @@ run_bartender.py
      -> (선택) realsense_launch.py
      -> (선택) src/frontend/developer_frontend.py
      -> (선택) src/frontend/user_frontend.py
-                -> src/frontend/user_frontend.py
 ```
 
 `system_launch.py` 주요 플래그:
@@ -127,6 +126,5 @@ Frontend start/stop 요청
 ## 6) 현재 미완성/확정 전 항목
 
 - 음성주문 결과의 ROS 표준 인터페이스(토픽/서비스) 미확정
-- 사용자 Web UI의 `/api/control/start`와 백엔드 로봇 실행 파이프라인 미연동
 - Web UI TTS는 현재 톤(wav) 응답 기반으로 임시 구현
-- UI 레이아웃 일부는 `.ui` 정적 배치가 아니라 런타임 코드 배치 우선
+- 개발자 UI 구조는 `developer_frontend_ui_runtime.py` 기반이며, 동적 레이아웃은 `developer_frontend.py`에서 계산

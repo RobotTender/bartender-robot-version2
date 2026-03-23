@@ -219,19 +219,18 @@ python3 -m py_compile src/backend/task_backend_node.py
 python3 -m py_compile src/bartender_action/robot_action_planner.py
 ```
 
-### 4.2 계획모드(내부 Dry-run) 검증
+### 4.2 계획 검증(API 옵션 기반)
 
 현재 코드 기준 주의사항:
 
-- 개발자 UI에는 별도 드라이런 토글/버튼이 없습니다.
+- 개발자 UI에는 별도 계획모드 토글/버튼이 없습니다.
 - 개발자 UI에서 시퀀스 시작 시 `execute_robot_action=True`가 명시 전달됩니다.
   - `src/frontend/developer_frontend.py`의 시퀀스 시작/단독테스트 요청 참고
-- 따라서 UI만 사용하면 기본은 실동작(실행모드)입니다.
-
+- 즉, UI 기본 동작은 실동작(실행모드)입니다.
 
 참고:
+- 계획 검증이 필요하면 `/api/sequence/start` 요청에 `execute_robot_action=false`를 명시해 호출합니다.
 - `BARTENDER_ROBOT_ACTION_EXECUTE`는 `execute_enabled_override`가 없는 호출에서만 fallback으로 사용됩니다.
-- 시퀀스매니저 경유 요청은 `execute_robot_action` 값을 명시해 전달하므로 env fallback이 우선되지 않습니다.
 
 검증 포인트:
 
@@ -240,7 +239,7 @@ python3 -m py_compile src/bartender_action/robot_action_planner.py
 - `[glass] 완성컵 처리 시퀀스 시작` 로그만 남고 CUP PICK/DELIVERY 모션 step은 생성되지 않는지
 - 재료별 포즈/오프셋 로딩 여부
 
-> [스크린샷-09 삽입] 계획모드(Dry-run) 로그
+> [스크린샷-09 삽입] 계획 검증(`execute_robot_action=false`) 로그
 
 ### 4.3 Real-run(실기 동작 검증)
 
@@ -313,7 +312,7 @@ UI 절차:
 API 확인(선택):
 
 - 단독 테스트는 `/api/sequence/start` 요청의 `request.robot_action_only=true`로도 동일하게 실행할 수 있습니다.
-- 필요 시 `execute_robot_action=false`를 함께 보내 단독 테스트 계획모드(내부 Dry-run) 검증도 가능합니다.
+- 필요 시 `execute_robot_action=false`를 함께 보내 단독 테스트 계획 검증도 가능합니다.
 
 > [스크린샷-13 삽입] 개발자 UI `로봇동작 단독 테스트` 버튼 위치  
 
@@ -340,7 +339,7 @@ API 확인(선택):
 - 스크린샷-06: 이동 확인 팝업/실행
 - 스크린샷-07: 동일 변수명 동시 하이라이트
 - 스크린샷-08: 저장 완료 상태/로그
-- 스크린샷-09: 계획모드(Dry-run) 로그
+- 스크린샷-09: 계획 검증(`execute_robot_action=false`) 로그
 - 스크린샷-10: 그리퍼 초기화 성공 로그
 - 스크린샷-11: PICK/POUR/RETURN 단계 로그
 - 스크린샷-12: (선택) 글라스 DELIVERY 로그(해당 모션 블록 활성화 후)

@@ -355,11 +355,9 @@ class RobotControllerNode(Node):
 
     def _log_info(self, msg):
         self.get_logger().info(msg)
-        print(f"[로봇] {msg}")
 
     def _log_error(self, msg):
         self.get_logger().error(msg)
-        print(f"[오류] {msg}")
 
     def terminate_gripper(self, best_effort: bool = False):
         if not self.use_real_gripper:
@@ -683,8 +681,6 @@ class NativeRobotActionApi:
                 # 메인 로그창에서 로봇동작 중간단계/목표값을 바로 확인할 수 있게 출력
                 if self.robot_controller is not None:
                     self.robot_controller._log_info(f"[로봇동작] {msg}")
-                else:
-                    print(f"[로봇동작] {msg}")
             except Exception:
                 pass
 
@@ -838,7 +834,6 @@ class NativeRobotActionApi:
         depth_m: float,
         apply_menu_offset: bool,
         extra_offset_xyz_mm,
-        debug_label: str | None = None,
     ):
         u = float(center_uv[0])
         v = float(center_uv[1])
@@ -866,13 +861,6 @@ class NativeRobotActionApi:
         tx += ex
         ty += ey
         tz += ez
-        if debug_label:
-            self._append_log(
-                f"{debug_label} 계산: base=({base_x:.1f},{base_y:.1f},{base_z:.1f}) + "
-                f"menu_offset=({float(menu_ox):.1f},{float(menu_oy):.1f},{float(menu_oz):.1f}) + "
-                f"extra_offset=({ex:.1f},{ey:.1f},{ez:.1f}) => final=({tx:.1f},{ty:.1f},{tz:.1f}), "
-                f"UV=({u:.1f},{v:.1f}), depth={z_mm:.1f}mm, ingredient={str(ingredient_code or '').strip().lower() or '-'}"
-            )
         return tx, ty, tz
 
     def set_robot_mode(self, mode: int, label: str = "로봇 오토모드 전환", enabled: bool = True):
@@ -1279,7 +1267,6 @@ class NativeRobotActionApi:
             depth_m=float(depth_m),
             apply_menu_offset=bool(apply_menu_offset),
             extra_offset_xyz_mm=extra_offset_xyz_mm,
-            debug_label=str(label or "비전 타겟 계산"),
         )
         self._resolved_targets[key] = (tx, ty, tz)
         self._append_log(f"{label}(XYZ={tx:.1f},{ty:.1f},{tz:.1f})")
@@ -1784,7 +1771,11 @@ class RobotBackend:
                     continue
                 now = time.monotonic()
                 if (now - last_warn_at) > 1.0:
-                    print(f"executor.spin_once 예외: {e}")
+                    try:
+                        if self.robot_controller is not None:
+                            self.robot_controller.get_logger().warning(f"executor.spin_once 예외: {e}")
+                    except Exception:
+                        pass
                     last_warn_at = now
                 time.sleep(0.05)
 
@@ -1807,7 +1798,11 @@ class RobotBackend:
                     continue
                 now = time.monotonic()
                 if (now - last_warn_at) > 1.0:
-                    print(f"vision executor.spin_once 예외: {e}")
+                    try:
+                        if self.robot_controller is not None:
+                            self.robot_controller.get_logger().warning(f"vision executor.spin_once 예외: {e}")
+                    except Exception:
+                        pass
                     last_warn_at = now
                 time.sleep(0.03)
 
@@ -4039,8 +4034,6 @@ class RobotBackend:
                         self.robot_controller._log_error(f"[로봇동작] {text}")
                     else:
                         self.robot_controller._log_info(f"[로봇동작] {text}")
-                else:
-                    print(f"[로봇동작]{'[오류]' if is_error else ''} {text}")
             except Exception:
                 pass
 
@@ -4980,9 +4973,12 @@ class RobotBackend:
                         if self._mode_node is not None:
                             rclpy.spin_once(self._mode_node, timeout_sec=0.01)
                 else:
-                    print("ROS 컨텍스트가 이미 종료되어 그리퍼 terminate를 생략합니다.")
+                    self.robot_controller.get_logger().warning("ROS 컨텍스트가 이미 종료되어 그리퍼 terminate를 생략합니다.")
             except Exception as e:
-                print(f"그리퍼 terminate 중 예외(종료 과정에서 흔함): {e}")
+                try:
+                    self.robot_controller.get_logger().warning(f"그리퍼 terminate 중 예외(종료 과정에서 흔함): {e}")
+                except Exception:
+                    pass
 
         # 그리퍼 종료 시도 후에 stop_event를 세팅해야,
         # background executor spin이 service 응답을 끝까지 처리할 수 있다.
@@ -5049,7 +5045,11 @@ class RobotBackend:
             pass
 
         self._started = False
-        print("종료 완료.")
+        try:
+            if self.robot_controller is not None:
+                self.robot_controller.get_logger().info("종료 완료.")
+        except Exception:
+            pass
 
 
 def main():

@@ -170,25 +170,5 @@ developer_frontend.py
 
 - Doosan 동작에는 vendor patch 적용이 필요합니다.
 - Web UI는 기본값이 비활성화(`USER_FRONTEND_ENABLED=0`, 하위호환 `VOICE_ORDER_WEBUI_ENABLED=0`)라서 접근해도 주문은 차단될 수 있습니다.
-- 사용자 Web UI의 `/api/control/start`는 현재 백엔드 로봇 실행과 직접 연결되지 않은 상태입니다.
+- 사용자 Web UI의 `/api/control/start|stop`는 내부적으로 백엔드 시퀀스 API(`/api/sequence/start|stop`)를 호출합니다.
 - 음성주문 결과는 현재 백엔드 메모리 스냅샷과 UI 이벤트 기반이며, ROS 토픽/서비스 표준 인터페이스는 아직 확정 전입니다.
-
-## 리모트 최신 커밋 대비 변경 요약 (2026-03-17)
-
-비교 기준: `origin/dev` 최신 커밋 `89cb9e6` 대비 로컬 작업트리.
-
-- 아키텍처/실행 흐름 확장
-  - `task_backend_node.py`, `developer_frontend.py` 중심으로 바텐더 시퀀스 API 연동과 상태 표현 로직이 크게 확장됨.
-  - 사용자 Web UI 진입점(`src/frontend/user_frontend.py`)과 주문 라우팅/워커 분리 파일이 추가됨.
-- 주문 기능 파이프라인 정리
-  - STT/Gemini, LLM 분류, TTS 관련 모듈(`gemini_stt_pipeline.py`, `voice_order_worker.py`, `openai_tts.py`, `voice_order_route.py`)이 추가/재구성됨.
-  - 기존 `voice_order_test_worker.py`는 제거되고 실제 워커 경로로 통합됨.
-- 비전/캘리브레이션 데이터 갱신
-  - 비전/캘리브레이션 관련 코드와 파라미터가 업데이트됨.
-  - 구 캘리브레이션 매트릭스 일부는 정리되고 신규 매트릭스 파일이 추가됨.
-- 문서/실행 가이드 업데이트
-  - `README.md`, `docs/*` 다수 문서에서 구조도, 배포/테스트 절차, 운영 메모를 최신 흐름에 맞춰 정리함.
-
-## 남은 작업
-
-- 모션 테스트(Motion Test) 미완료: 실제 로봇 기준 동작 시퀀스 최종 검증이 아직 남아 있음.

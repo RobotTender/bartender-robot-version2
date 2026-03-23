@@ -62,15 +62,13 @@
 
 ## 4) 구조/운영 리스크
 
-- `.ui` 파일과 런타임 코드 배치가 혼합되어 있어 디자인 변경 시 코드 검토가 필요
+- 개발자 UI는 `developer_frontend_ui_runtime.py` + `developer_frontend.py` 조합으로 관리되므로, UI 구조/동작 변경 시 두 파일 정합성을 함께 점검해야 함
 - 음성주문은 외부 API 키와 네트워크 상태에 의존
 - 워커 subprocess 타임아웃(40s) 기준에서 장시간 STT 지연 시 실패 가능
 
 ## 5) 정리 후보(삭제 보류)
 
 - `assets/models/best.pt`
-- `src/vision/drink_detection_preview.py`
-- `src/vision/glass_fill_level_preview.py`
 - 로컬/캐시 산출물(`__pycache__`, 일부 `.vscode/*`)
 
 삭제 전 반드시 확인:

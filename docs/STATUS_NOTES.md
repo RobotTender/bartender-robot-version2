@@ -1,75 +1,40 @@
 # 현재 상태 노트
 
-기준일: 2026-03-20
+기준일: 2026-03-23
 
-## 2026-03-20 추가 업데이트 (모션 시퀀스/UI)
+## 릴리즈 정리 반영 사항
 
-- 개발자 UI `로봇 액션 포지션 설정`의 시퀀스 표를 재정리했다.
-  - 재료 탭 분리(소주/맥주/글라스잔), 타입 축약 표기, 행/동일변수 하이라이트를 반영했다.
-  - `(return_ref)` 표기를 숨기고 같은 탭 내 동일 변수 참조행이 함께 보이도록 정리했다.
-- 참조형 표기 규칙을 통일했다.
-  - `service_ready_posj`는 상단 기준값 1개(수정/티칭 가능)를 유지하고, 중간 삽입 행은 참조형으로 고정했다.
-  - return 역순/그리퍼 오픈·파지 행은 `위치참조` + 현재값 `-` + 상태 `참조`로 고정했다.
-- 시퀀스 항목을 보강했다.
-  - 글라스 DELIVERY에 `전달 위치 이탈`을 추가했다.
-  - PICK/RETURN의 그리퍼 동작 순서 표기를 실제 시퀀스 흐름에 맞췄다.
-- 현재 실행 기준 주의:
-  - `robot_action_planner.py`의 `_append_finish_sequence(...)` 내부 CUP PICK/DELIVERY 모션 블록은 주석 처리 상태다.
-  - 기본 planner 실행에서는 `[glass] 완성컵 처리 시퀀스 시작` 로그만 남고 컵 전달 step은 실행되지 않는다.
-- 실행 안정성 측면에서 시퀀스 시작 전 그리퍼 초기화 확인 로직을 명시적으로 적용했다.
-- 제거/정리된 UI 항목:
-  - 액션 포지션 표 `수정` 버튼, `값클릭수정`/`이동전용`/`보기` 라벨, `gripper_actions` 결합행 표기를 제거했다.
-- 유지된 동작:
-  - 백엔드 실행 진입점(`run_bartender_first_ingredient_action`)과 시퀀스 API(`/api/sequence/start|stop|state`) 구조는 유지했다.
-- 상세 수정/테스트 절차 문서 추가:
+- 프론트엔드 구조 단일화
+  - `assets/frontend/developer_frontend.ui` 제거
+  - 개발자 UI 구조는 `src/frontend/developer_frontend_ui_runtime.py` + 동적 로직(`src/frontend/developer_frontend.py`)로 일원화
+- 비전 preview 유틸 정리
+  - `src/vision/drink_detection_preview.py`
+  - `src/vision/glass_fill_level_preview.py`
+  - 위 2개 파일 삭제(실행 경로/런치 미사용)
+- 미사용 프론트 코드 제거
+  - `developer_frontend.py`의 미사용 `preview_point` 콜백 및 관련 필드 정리
+- 레이아웃 보정(최근 UI 이슈 대응)
+  - 해상도 비율 기반으로 로봇 패널 표/컨트롤 배치 계산 보정
+  - 표 행 높이 계산에서 하단 빈공간이 남는 케이스 제거
+
+## 문서 정리 반영 사항
+
+- 현재 구조 기준으로 문서 정합성 갱신
+  - `README.md`
+  - `docs/PROJECT_LAYOUT.md`
+  - `docs/ARCHITECTURE.md`
+  - `docs/ORDER_FEATURE_MERGE_PHASE1.md`
   - `docs/MOTION_SEQUENCE_EDIT_TEST_GUIDE.md`
+  - `docs/ROS2_JAZZY_PORTING_VERIFICATION.md`
+- 삭제된 파일(.ui / preview) 참조 제거
+- 운영에 직접 필요 없는 과거 작업트리/푸시 이력성 본문 제거
+- 가이드 문구 정리
+  - UI에 없는 드라이런 버튼 표현 제거
+  - 계획 검증은 API 옵션(`execute_robot_action=false`) 기반으로 명시
 
-## 리모트 최신 커밋 대비 변경 요약
+## 현재 릴리즈 관점 체크포인트
 
-비교 기준: `origin/dev` 최신 커밋 `89cb9e6` 대비 로컬 작업트리.
-
-- 백엔드/프론트엔드 시퀀스 제어 연동이 확장되었고, 상태 공유/표시 흐름이 정리되었다.
-- 음성주문 파이프라인은 워커 중심 구조로 재편되었고 STT/LLM/TTS 모듈이 분리되었다.
-- 사용자 Web UI 진입점과 주문 라우트 코드가 추가되었다.
-- 비전/캘리브레이션 파라미터 및 매트릭스 파일이 최신 측정값 기준으로 갱신되었고, 비전 볼륨체크 학습파일도 최신 파일로 교체되었다.
-- 운영/배포/구조 문서가 현재 코드 구조에 맞게 업데이트되었다.
-
-## 커밋/푸시 이력 코멘트 (상세)
-
-- 로컬 커밋은 `dev` 브랜치에서 2026-03-17 기준으로 1건 생성되었고, 현재 커밋 해시는 최신 amend 결과 기준으로 관리한다.
-- 커밋 최상단 코멘트는 `feat: 전체 시퀸스 플로우 머지,(메뉴얼/오토) / Web,Developer UI 전체연동 시작~끝 테스트 완료.`로 기록했다.
-- 이번 커밋에는 기능 코드, 런치 설정, 비전/캘리브레이션 데이터, UI, 운영 문서가 함께 반영되었고, 변경 규모는 `46 files changed, 12585 insertions(+), 963 deletions(-)`로 집계되었다.
-- 비전 파트에서는 볼륨체크 학습파일을 최신 파일로 교체해 현재 테스트 기준과 모델 버전을 맞췄다.
-- 문서 측면에서는 리모트 최신 커밋 대비 큰 변경 흐름을 요약하고, 잔여 작업으로 모션 테스트가 남아 있음을 명시했다.
-- 환경변수 관리 측면에서는 `.env.example` 템플릿을 추가해 API 키 입력 위치를 분리했고, 실제 키 노출 방지를 위해 키 항목은 공백 상태로 유지했다.
-- 추가로 `.gitignore`에 `.env.example` 예외 규칙을 넣어 템플릿은 버전관리 대상에 포함하고, `perf.data`는 로컬 산출물로 제외하도록 정리했다.
-- 원격 푸시는 `origin/dev` 대상으로 시도했으나 현재 실행 계정 인증/권한 문제로 반영되지 않았다.
-- HTTPS 푸시는 `could not read Username for 'https://github.com'` 오류로 중단되었고, SSH 푸시는 `Permission denied to machyong` 오류로 중단되었다.
-- 따라서 현재 상태는 `dev`가 `origin/dev` 대비 `ahead 1`이며, 저장소 접근 권한이 있는 계정으로 인증한 뒤 `git push origin dev`를 재실행해야 원격에 반영된다.
-
-## 남은 작업
-
-- 모션 테스트(Motion Test) 미완료.
-- 실제 로봇 기준 메뉴 시퀀스 전체 동작(시작, 중지, 예외 복구) 최종 검증 필요.
-
-## Jazzy 포팅/검증 메모
-
-- ROS2 Jazzy 기준 포팅 및 실행 검증 결과는 `docs/ROS2_JAZZY_PORTING_VERIFICATION.md`에 정리했다.
-- 변경 전체 패치는 `docs/patches/ros2_jazzy_porting_20260310.patch`를 기준으로 관리한다.
-
-## 캘리브레이션
-
-- 캘리브레이션 기능 테스트 완료로 관리한다.
-- 운영 시 주의할 점은 목표 포지션 정확도 확인이 필요하다는 점이다.
-- 캘리브레이션 결과 저장 후에는 대표 위치 몇 점을 다시 찍어 실제 도달 위치 오차를 확인하는 것을 권장한다.
-
-## 비전 객체 인식
-
-- 비전 객체 인식 정보는 모델별 offset 관리가 필요하다.
-- 같은 클래스라도 모델이 바뀌면 검출 중심과 실제 목표점이 달라질 수 있다.
-- 모델 교체, 재학습, threshold 변경 시에는 offset을 다시 측정하고 적용 여부를 확인해야 한다.
-
-## 운영 메모
-
-- 캘리브레이션 파일 적용 상태와 실제 TCP 설정 상태를 함께 확인한다.
-- 현장 검증 시에는 사용한 모델명, 적용한 offset 값, 검증 결과를 같이 기록한다.
+- Doosan vendor patch 적용 여부
+- `.env` API 키/호스트/포트 값 검증
+- `config/parameter.csv`, `config/menu_xyz_offsets.json`, `config/robot_action_pose_config.json` 운영값 백업
+- 실기 기준 모션 최종 검증(PICK/POUR/RETURN 및 예외복구)

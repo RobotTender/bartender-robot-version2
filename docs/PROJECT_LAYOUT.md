@@ -1,6 +1,6 @@
 # Project Layout
 
-기준일: 2026-03-11
+기준일: 2026-03-23
 
 ## 최상위 구조
 
@@ -22,9 +22,6 @@
 
 ### `assets/` (런타임 자산)
 
-- `assets/frontend/developer_frontend.ui`
-  - 개발자 UI 기본 레이아웃 파일
-  - 실행 시 일부 위치/크기는 `developer_frontend.py`가 동적으로 재배치
 - `assets/models/cam_1.pt`
   - 비전1 객체 인식 기본 모델
 - `assets/models/cam_2.pt`
@@ -73,6 +70,7 @@
   - `robot_action_planner.py`: 레시피/비전 기반 로봇 동작 시퀀스 플래너
 - `src/frontend/`
   - `developer_frontend.py`: 개발자 UI 메인
+  - `developer_frontend_ui_runtime.py`: 개발자 UI 정적 골격(UI 런타임 소스)
   - `user_frontend.py`: 사용자 Web UI 서버(최종 사용자 UI)
 - `src/order_integration/`
   - `gemini_stt_pipeline.py`: Gemini STT
@@ -84,7 +82,6 @@
   - `glass_fill_level.py`: 비전2 용량 메타 발행
   - `camera_eye_to_hand_robot_calibration.py`: 캘리브레이션 실행
   - `vision_meta_common.py`: 비전 메타 공통 베이스
-  - `*_preview.py`: 단독 미리보기 도구(정리 후보)
 
 ### `vendor/`
 
@@ -110,10 +107,6 @@
 
 - `assets/models/best.pt`
   - 기본 모델 경로에서 참조되지 않음(`cam_1.pt`, `cam_2.pt` 사용)
-- `src/vision/drink_detection_preview.py`
-  - system launch/프론트엔드 자동 실행 경로에서 사용하지 않음
-- `src/vision/glass_fill_level_preview.py`
-  - system launch/프론트엔드 자동 실행 경로에서 사용하지 않음
 - `launch/__pycache__/`, `src/__pycache__/`
   - 실행 중 생성되는 캐시 산출물
 - `.vscode/c_cpp_properties.json`

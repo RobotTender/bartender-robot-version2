@@ -75,7 +75,6 @@
 
 ### 비전 노드
 - `src/vision/glass_fill_level.py`
-- `src/vision/glass_fill_level_preview.py`
   - 구버전 모델 직렬화 별칭(`Segment26`, `Proto26`) 호환 패치 추가.
 - `src/vision/vision_meta_common.py`
   - depth 지연/미수신 시에도 color 기반 메타 파이프라인이 멈추지 않도록 변경.
@@ -107,7 +106,6 @@
   - `src/backend/task_backend_node.py`
   - `src/frontend/developer_frontend.py`
   - `src/vision/glass_fill_level.py`
-  - `src/vision/glass_fill_level_preview.py`
   - `src/vision/vision_meta_common.py`
 
 ### 런타임 포인트 검증

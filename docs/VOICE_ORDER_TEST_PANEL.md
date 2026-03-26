@@ -1,46 +1,81 @@
-# Voice Order Panel / WEB UI
+# Voice Order Panel / Web UI
 
-이 문서는 `bartender-robot` 저장소 내부 소스만 사용해 구성된 음성주문 기능을 설명합니다.
+Last updated: 2026-03-26
 
-## 목적
+## English
 
-- `bartender-robot/src/order_integration` 내부 로직으로 음성주문 분류/레시피 도출 수행
-- 외부 저장소 참조 없이 단일 저장소에서 운영
-- 최종 사용자용 WEB UI 제공
+### Purpose
 
-## 주요 파일
+- Run voice ordering from this repository only.
+- Support developer debugging and end-user browser flow.
+
+### Core files
 
 - `src/order_integration/voice_order_pipeline.py`
-  - 메뉴 분류/레시피 도출 + stage 이벤트/결과 payload 생성 로직
 - `src/order_integration/voice_order_worker.py`
-  - 백엔드 요청을 받아 STT/분류를 실행하는 음성 워커
 - `src/order_integration/voice_order_route.py`
-  - 백엔드에서 음성 워커 subprocess를 호출하는 래퍼
-- `src/frontend/user_frontend.py`
-  - 최종 사용자용 WEB UI 서버
 - `src/frontend/developer_frontend.py`
-  - 음성주문 패널(상태/업데이트/WEB UI 링크) 표시
+- `src/frontend/user_frontend.py`
 
-## WEB UI 실행
+### Run
 
-기본 실행(`run_bartender.py`) 시 `launch/system_launch.py`에서 WEB UI가 함께 기동됩니다.
+`run_bartender.py` starts web UI process by default via `system_launch.py`.
 
-- 기본 주소: `http://127.0.0.1:8000`
-- 브라우저에서 마이크 버튼으로 STT 수집 후 주문 처리 가능
+Typical URL:
 
-필수 환경변수(`.env`):
+- `http://127.0.0.1:8000`
 
-- `GOOGLE_API_KEY` 또는 `GEMINI_API_KEY` (Gemini STT)
-- `OPENAI_API_KEY` (메뉴 분류 LLM)
+Order entry gate:
 
-필수 파이썬 패키지:
+- `USER_FRONTEND_ENABLED=1` (legacy: `VOICE_ORDER_WEBUI_ENABLED=1`)
+
+### Dependencies
 
 - `google-genai`
 - `openai`
 - `SpeechRecognition`
 - `python-dotenv`
 
-## 제한
+### Limitations
 
-- 로봇 명령 실행은 음성주문 경로에서 비활성화
-- 브라우저 마이크 지원은 Web Speech API 지원 브라우저에 의존
+- Browser mic behavior depends on browser/device support.
+- Robot action execution is controlled by backend sequence flow, not directly by worker.
+
+## Korean (한국어)
+
+### 목적
+
+- 이 저장소 내부 코드만으로 음성주문을 실행합니다.
+- 개발자 디버그와 최종 사용자 브라우저 흐름을 함께 지원합니다.
+
+### 핵심 파일
+
+- `src/order_integration/voice_order_pipeline.py`
+- `src/order_integration/voice_order_worker.py`
+- `src/order_integration/voice_order_route.py`
+- `src/frontend/developer_frontend.py`
+- `src/frontend/user_frontend.py`
+
+### 실행
+
+`run_bartender.py` 실행 시 `system_launch.py` 경로에서 웹 UI 프로세스가 기본 기동됩니다.
+
+기본 접속 주소:
+
+- `http://127.0.0.1:8000`
+
+주문 진입 활성화:
+
+- `USER_FRONTEND_ENABLED=1` (하위호환: `VOICE_ORDER_WEBUI_ENABLED=1`)
+
+### 의존 패키지
+
+- `google-genai`
+- `openai`
+- `SpeechRecognition`
+- `python-dotenv`
+
+### 제한사항
+
+- 브라우저 마이크 동작은 브라우저/장치 지원 여부에 영향을 받습니다.
+- 로봇 동작 실행 권한은 워커가 아니라 백엔드 시퀀스 흐름에서 제어됩니다.

@@ -1,86 +1,45 @@
-# 주문 기능 머지 1차 정리
+# Order Feature Merge - Phase 1 Notes
 
-기준일: 2026-03-11
+Last updated: 2026-03-26
 
-이 문서는 커밋 전 점검용으로 현재 "무엇을 완료했고, 무엇이 남았는지"를 정리합니다.
+## English
 
-## 1) 1차 완료 범위
+### Completed in phase 1
 
-### 코드 구조 통합
+- Voice-order modules consolidated under `src/order_integration/`.
+- User web UI entrypoint split into `src/frontend/user_frontend.py`.
+- Sequence integration path standardized through backend sequence APIs.
+- Developer UI includes voice-order debug and robot-action-only test entry.
 
-- 음성주문 관련 코드를 `src/order_integration/`로 통합
-- 백엔드 음성 처리 엔트리를 `task_backend_node.py`의 `run_voice_order_runtime()`로 일원화
-- 사용자 Web UI 엔트리를 `src/frontend/user_frontend.py`로 분리
+### Current status
 
-### 시스템 실행 경로
+- Voice request execution: backend -> worker subprocess -> result payload.
+- User UI start/stop: `/api/control/*` -> backend `/api/sequence/*` bridge.
+- Safety authority: backend/sequence manager only.
 
-- `run_bartender.py` -> `launch/system_launch.py` 단일 진입 유지
-- `system_launch.py`에서 사용자 Web UI 프로세스 실행 추가
-- `run_web`, `run_webui` 구형 인자를 `run_user_frontend`로 정리
+### Open items
 
-### 음성 처리 책임 분리
+- Final ROS-standard interface for order result sharing is not fixed.
+- Voice quality and operational prompts still need field tuning.
+- Hardware-site defaults (`parameter.csv`, offsets, calibration) remain site-specific.
 
-- 백엔드: 요청 전달/결과 수신 및 보관
-- 워커: 마이크 입력(STT), LLM 분류, 레시피 도출
-- 로봇 모션 명령은 음성 워커 경로에서 제거
+## Korean (한국어)
 
-### 개발자 UI 디버깅 기능
+### 1차 완료 항목
 
-- 음성주문 연결 ON/OFF
-- 마이크 입력 요청 버튼
-- stage/event 로그 표시
-- 주문 결과(메뉴/상태/TTS/레시피) 표시
-- 업데이트 주기(ms) 표시
+- 음성주문 모듈을 `src/order_integration/`로 통합했습니다.
+- 사용자 웹 UI 엔트리포인트를 `src/frontend/user_frontend.py`로 분리했습니다.
+- 시퀀스 연동 경로를 백엔드 시퀀스 API 기반으로 표준화했습니다.
+- 개발자 UI에 음성 디버그 및 로봇동작 단독 테스트 진입을 포함했습니다.
 
-## 2) 현재 동작 확인 포인트
+### 현재 상태
 
-### 필수 환경변수
+- 음성 요청 실행: 백엔드 -> 워커 subprocess -> 결과 payload
+- 사용자 UI 시작/중지: `/api/control/*` -> 백엔드 `/api/sequence/*` 브리지
+- 안전 권한: 백엔드/시퀀스 매니저 단일 보유
 
-- `GOOGLE_API_KEY` 또는 `GEMINI_API_KEY`
-- `OPENAI_API_KEY`
+### 남은 항목
 
-### 필수 패키지
-
-- `google-genai`
-- `SpeechRecognition`
-- `openai`
-- `python-dotenv`
-
-### 실행 확인
-
-1. `python3 run_bartender.py` 실행
-2. 개발자 UI에서 음성주문 ON 후 "마이크 입력 시작" 테스트
-3. 사용자 Web UI 주소 접속(`http://<host>:<port>`)
-4. `VOICE_ORDER_WEBUI_ENABLED=0`일 때 차단 화면 노출 확인
-
-## 3) 아직 안 된 기능(현재 기준)
-
-- 사용자 Web UI `/api/control/start` -> 백엔드 로봇 실행 파이프라인 연동
-- 음성주문 결과의 ROS 서비스/토픽 공식 인터페이스 확정
-- 음성주문 결과를 실제 제조 시퀀스(모션 계획)로 연결하는 단계
-- 사용자 Web UI TTS를 실제 음성 합성 엔진으로 교체(현재 tone wav)
-
-## 4) 구조/운영 리스크
-
-- 개발자 UI는 `developer_frontend_ui_runtime.py` + `developer_frontend.py` 조합으로 관리되므로, UI 구조/동작 변경 시 두 파일 정합성을 함께 점검해야 함
-- 음성주문은 외부 API 키와 네트워크 상태에 의존
-- 워커 subprocess 타임아웃(40s) 기준에서 장시간 STT 지연 시 실패 가능
-
-## 5) 정리 후보(삭제 보류)
-
-- `assets/models/best.pt`
-- 로컬/캐시 산출물(`__pycache__`, 일부 `.vscode/*`)
-
-삭제 전 반드시 확인:
-
-- 수동 테스트 스크립트로 쓰는 사람이 없는지
-- 문서/운영 스크립트에서 참조 중인지
-- 배포 패키지에 포함해야 하는지
-
-## 6) 커밋 전 체크리스트
-
-- [ ] `README.md`, `docs/ARCHITECTURE.md`, `docs/PROJECT_LAYOUT.md` 내용 일치
-- [ ] `.env` 키 이름과 코드 참조 키 일치
-- [ ] 사용자 Web UI 포트/호스트 문서와 launch 기본값 일치
-- [ ] 정리 후보 파일 삭제 여부 최종 결정
-- [ ] 최소 실행 테스트(개발자 UI + 사용자 Web UI) 완료
+- 주문 결과 공유용 ROS 표준 인터페이스는 아직 확정 전입니다.
+- 음성 품질/운영 프롬프트는 현장 튜닝이 추가로 필요합니다.
+- `parameter.csv`, 오프셋, 캘리브레이션은 장비별 값으로 관리해야 합니다.

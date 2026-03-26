@@ -1,7 +1,23 @@
 # Patch Bundle Index
 
+## English
+
 - `ros2_jazzy_porting_20260310.patch`
-  - 용도: ROS2 Jazzy 포팅 및 검증 변경사항 전체 패치
-  - 적용 예시:
-    - `git apply docs/patches/ros2_jazzy_porting_20260310.patch`
-    - 또는 `patch -p1 < docs/patches/ros2_jazzy_porting_20260310.patch`
+  - Full patch bundle used during Jazzy porting work.
+
+Apply example:
+
+```bash
+git apply docs/patches/ros2_jazzy_porting_20260310.patch
+```
+
+## Korean (한국어)
+
+- `ros2_jazzy_porting_20260310.patch`
+  - Jazzy 포팅 작업 당시의 전체 patch 번들입니다.
+
+적용 예시:
+
+```bash
+git apply docs/patches/ros2_jazzy_porting_20260310.patch
+```

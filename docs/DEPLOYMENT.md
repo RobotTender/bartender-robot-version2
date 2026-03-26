@@ -1,196 +1,131 @@
 # Deployment Guide
 
-## 1. 배포 전 전제조건
+Last updated: 2026-03-26
 
-필수 설치/준비:
+## English
 
-- ROS2 Humble
-- `doosan-robot2` 소스
-- `realsense2_camera` 패키지
-- 이 저장소: `bartender-robot`
-- 필요한 경우 모델 파일
+### Prerequisites
 
-워크스페이스 예시:
+- ROS2 workspace with:
+  - this repository
+  - `doosan-robot2`
+  - `realsense2_camera`
+- Python dependencies for voice pipeline
+- Correct `.env` keys for external APIs
 
-```text
-<ros2_ws>/src/
-  doosan-robot2/
-  bartender-robot/
-```
-
-## 2. Doosan vendor patch 적용
-
-이 저장소는 Doosan 원본만으로는 바로 동작하지 않습니다.
-
-핵심 이유:
-
-- `RobotState`, `RobotStateRt` 토픽이 필요함
-- Gazebo/bringup 쪽 보강 patch가 필요할 수 있음
-
-문서:
-
-- [docs/VENDOR_PATCHES.md](VENDOR_PATCHES.md)
-
-적용:
+### 1) Apply vendor patches
 
 ```bash
 cd <repo-root>
-./scripts/apply_doosan_vendor_patches.sh
+./scripts/apply_doosan_vendor_patches.sh [<path-to-doosan-robot2>]
 ```
 
-## 3. 빌드
+Default target path is `${HOME}/ros2_ws/src/doosan-robot2`.
+
+### 2) Build workspace
 
 ```bash
 cd <ros2_ws>
-source /opt/ros/humble/setup.bash
+source /opt/ros/jazzy/setup.bash
 colcon build --symlink-install
-source <ros2_ws>/install/setup.bash
+source install/setup.bash
 ```
 
-## 4. 런타임 설정 확인
+If Jazzy is unavailable, use your installed ROS distro.
 
-배포 전에 최소한 아래를 확인해야 합니다.
+### 3) Runtime checklist
 
-### 카메라 시리얼
+- `config/parameter.csv`
+  - `vision1_serial`, `vision2_serial`
+- `config/calibration/*.txt`
+  - active calibration matrix exists
+- `assets/models/`
+  - required model files exist (`cam_1.pt`, `cam_2.pt`)
+- `.env`
+  - API keys and web UI flags configured
 
-- [config/parameter.csv](../config/parameter.csv)
-
-확인 항목:
-
-- `vision1_serial`
-- `vision2_serial`
-
-### 캘리브레이션 파일
-
-- [config/calibration](../config/calibration)
-
-확인 항목:
-
-- 실제 사용할 행렬 파일 존재 여부
-- `parameter.csv`의 활성 경로와 일치 여부
-
-### 모델 파일
-
-- [assets/models](../assets/models)
-
-현재는:
-
-- [assets/models/cam_1.pt](../assets/models/cam_1.pt) (비전1)
-- [assets/models/cam_2.pt](../assets/models/cam_2.pt) (비전2)
-
-## 5. 실행 방법
-
-### 기본 실행
+### 4) Start
 
 ```bash
 cd <repo-root>
 python3 run_bartender.py
 ```
 
-사용자 Web UI를 같이 쓰는 경우:
-
-- 기본 포트: `8000`
-- 활성화 플래그: `VOICE_ORDER_WEBUI_ENABLED=1`
-
-### 실제 로봇
+Variants:
 
 ```bash
-python3 run_bartender.py robot_mode:=real robot_host:=110.120.1.68 robot_model:=e0509
-```
-
-### 가상 로봇
-
-```bash
+python3 run_bartender.py robot_mode:=real robot_host:=<ROBOT_IP> robot_model:=e0509
 python3 run_bartender.py robot_mode:=virtual robot_model:=e0509
-```
-
-Gazebo 부하를 빼려면:
-
-```bash
-python3 run_bartender.py robot_mode:=virtual robot_model:=e0509 robot_gz:=false
-```
-
-### 로봇 없이 앱만 확인
-
-```bash
 python3 run_bartender.py run_robot:=false
 ```
 
-## 6. 개별 기능 실행
+### 5) Post-deploy validation
 
-### RealSense만
+- Robot state and motion stop path are responsive.
+- Camera streams and metadata arrive from both cameras.
+- Sequence API responds (`/api/sequence/state`).
+- Developer UI and user UI are reachable.
 
-```bash
-python3 launch/realsense_launch.py
-```
+## Korean (한국어)
 
-### 객체 인식 프로세스
+### 전제조건
 
-```bash
-python3 launch/object_detection_launch.py run_drink_detection:=true
-python3 launch/object_detection_launch.py run_glass_fill_level:=true
-python3 launch/object_detection_launch.py run_drink_detection:=true run_glass_fill_level:=true
-```
+- ROS2 워크스페이스에 아래가 포함되어야 합니다.
+  - 본 저장소
+  - `doosan-robot2`
+  - `realsense2_camera`
+- 음성 파이프라인용 Python 의존성
+- 외부 API용 `.env` 키 설정
 
-참고:
-
-- 기본 운영에서는 개발자 UI가 필요 시 비전 프로세스를 실행/관리합니다.
-- `object_detection_launch.py`는 수동 점검용으로도 사용할 수 있습니다.
-
-### 캘리브레이션 프로세스
+### 1) 벤더 패치 적용
 
 ```bash
-python3 launch/calibration_launch.py run_vision1_calibration:=true
-python3 launch/calibration_launch.py run_vision2_calibration:=true
+cd <repo-root>
+./scripts/apply_doosan_vendor_patches.sh [<doosan-robot2-경로>]
 ```
 
-## 7. 배포 체크리스트
+기본 대상 경로는 `${HOME}/ros2_ws/src/doosan-robot2`입니다.
 
-배포 전에 아래를 확인하는 게 좋습니다.
+### 2) 워크스페이스 빌드
 
-- Doosan patch 적용 여부
-- `colcon build` 성공 여부
-- `config/parameter.csv` 시리얼 값 확인
-- 캘리브레이션 파일 존재 여부
-- 실제 모델 파일 위치 확인
-- 실제 로봇 IP 확인
-- USB 연결 상태 확인
-  - RealSense가 USB 2.1로 붙으면 성능 저하 가능
+```bash
+cd <ros2_ws>
+source /opt/ros/jazzy/setup.bash
+colcon build --symlink-install
+source install/setup.bash
+```
 
-## 8. 배포물에 포함할 것
+Jazzy가 없으면 설치된 ROS 배포판으로 대체하세요.
 
-최소 포함 권장:
+### 3) 런타임 체크리스트
 
-- 이 저장소 전체
-- Doosan patch 파일
-- 배포 문서
-- 실제 사용할 calibration 파일
-- 실제 사용할 모델 파일
+- `config/parameter.csv`
+  - `vision1_serial`, `vision2_serial`
+- `config/calibration/*.txt`
+  - 활성 캘리브레이션 행렬 파일 존재
+- `assets/models/`
+  - 필요한 모델(`cam_1.pt`, `cam_2.pt`) 존재
+- `.env`
+  - API 키 및 웹 UI 플래그 설정
 
-배포 문서로 같이 전달할 것:
+### 4) 실행
 
-- 실제 로봇 IP
-- 로봇 모델명
-- RealSense serial mapping
-- 필요한 vendor branch/commit
+```bash
+cd <repo-root>
+python3 run_bartender.py
+```
 
-## 9. 배포 후 첫 점검
+변형 실행:
 
-### 1) 로봇
+```bash
+python3 run_bartender.py robot_mode:=real robot_host:=<ROBOT_IP> robot_model:=e0509
+python3 run_bartender.py robot_mode:=virtual robot_model:=e0509
+python3 run_bartender.py run_robot:=false
+```
 
-- `run_bartender.py`에서 bringup 정상 여부
-- 상태 토픽 정상 여부
+### 5) 배포 후 점검
 
-### 2) 카메라
-
-- 비전1/비전2 raw 화면 정상 여부
-- serial mapping이 맞는지
-
-### 3) 캘리브레이션
-
-- 캘 모드 ON/OFF 정상 여부
-- 메타 수신/오버레이 정상 여부
-
-### 4) 앱 종료
-
-- 프론트엔드 종료 시 관련 프로세스가 같이 정리되는지
+- 로봇 상태 수집/모션 정지 경로 정상 응답
+- 양쪽 카메라 스트림/메타 수신 정상
+- 시퀀스 API 응답 확인(`/api/sequence/state`)
+- 개발자 UI/사용자 UI 접근 가능
